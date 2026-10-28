@@ -1,0 +1,383 @@
+{
+  "$defs": {
+    "CheckRun": {
+      "additionalProperties": false,
+      "description": "One check against one server, whatever its outcome.",
+      "properties": {
+        "check_id": {
+          "pattern": "^[A-Z][0-9]+$",
+          "title": "Check Id",
+          "type": "string"
+        },
+        "server": {
+          "title": "Server",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "check_id",
+        "server",
+        "status"
+      ],
+      "title": "CheckRun",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/EvidenceSource"
+        },
+        "summary": {
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "data": {
+          "additionalProperties": true,
+          "title": "Data",
+          "type": "object"
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Artifact"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sha256"
+        }
+      },
+      "required": [
+        "source",
+        "summary"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "EvidenceSource": {
+      "enum": [
+        "config",
+        "server_claim",
+        "returned_content",
+        "syscall_trace",
+        "disk_snapshot"
+      ],
+      "title": "EvidenceSource",
+      "type": "string"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "properties": {
+        "check_id": {
+          "pattern": "^[A-Z][0-9]+$",
+          "title": "Check Id",
+          "type": "string"
+        },
+        "server": {
+          "title": "Server",
+          "type": "string"
+        },
+        "title": {
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/Status"
+        },
+        "kind": {
+          "$ref": "#/$defs/FindingKind"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "severity_rationale": {
+          "minLength": 1,
+          "title": "Severity Rationale",
+          "type": "string"
+        },
+        "owasp": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Owasp",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "observed_access": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservedAccess"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "recommendation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recommendation"
+        },
+        "limits": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limits",
+          "type": "array"
+        }
+      },
+      "required": [
+        "check_id",
+        "server",
+        "title",
+        "status",
+        "kind",
+        "severity",
+        "severity_rationale"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "FindingKind": {
+      "enum": [
+        "config_gap",
+        "implementation_defect",
+        "hint"
+      ],
+      "title": "FindingKind",
+      "type": "string"
+    },
+    "LabSection": {
+      "additionalProperties": false,
+      "description": "Dynamic tests on an isolated reproduction, never on the user's files.",
+      "properties": {
+        "path_mapping": {
+          "items": {
+            "$ref": "#/$defs/PathMapping"
+          },
+          "title": "Path Mapping",
+          "type": "array"
+        },
+        "not_reproduced": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Not Reproduced",
+          "type": "array"
+        },
+        "versions_tested": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Versions Tested",
+          "type": "object"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/CheckRun"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "title": "Findings",
+          "type": "array"
+        }
+      },
+      "title": "LabSection",
+      "type": "object"
+    },
+    "ObservedAccess": {
+      "description": "Strongest access to a forbidden path that the evidence proves, for one lab probe.",
+      "enum": [
+        "none",
+        "metadata",
+        "open_failed",
+        "read_not_returned",
+        "read_returned",
+        "write"
+      ],
+      "title": "ObservedAccess",
+      "type": "string"
+    },
+    "PathMapping": {
+      "additionalProperties": false,
+      "description": "How a path of the real configuration is reproduced in the lab.",
+      "properties": {
+        "host_path": {
+          "title": "Host Path",
+          "type": "string"
+        },
+        "lab_path": {
+          "title": "Lab Path",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "allowed",
+            "sibling_prefix",
+            "parent",
+            "home",
+            "outside"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "host_path",
+        "lab_path",
+        "role"
+      ],
+      "title": "PathMapping",
+      "type": "object"
+    },
+    "RealConfigSection": {
+      "additionalProperties": false,
+      "description": "Static analysis of the user's actual configuration. Nothing is executed.",
+      "properties": {
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/CheckRun"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "title": "Findings",
+          "type": "array"
+        }
+      },
+      "title": "RealConfigSection",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "Status": {
+      "enum": [
+        "confirmed",
+        "needs_review",
+        "passed",
+        "passed_limited",
+        "inconclusive",
+        "not_run"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "0.1",
+      "default": "0.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tool_version": {
+      "title": "Tool Version",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "real_config": {
+      "$ref": "#/$defs/RealConfigSection"
+    },
+    "lab_reproduction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LabSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "owasp_coverage": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Owasp Coverage",
+      "type": "object"
+    },
+    "disclaimer": {
+      "const": "A check without findings means that no problem was observed for the probes listed. It does not mean that the server is secure.",
+      "default": "A check without findings means that no problem was observed for the probes listed. It does not mean that the server is secure.",
+      "title": "Disclaimer",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tool_version",
+    "generated_at",
+    "real_config"
+  ],
+  "title": "Report",
+  "type": "object"
+}

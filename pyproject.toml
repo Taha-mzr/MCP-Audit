@@ -7,7 +7,9 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Mohamed Taha Mazzir" }]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pydantic>=2.10,<3",
+]
 
 [project.scripts]
 mcp-audit = "mcp_audit.cli:main"
