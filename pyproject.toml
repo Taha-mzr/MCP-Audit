@@ -1,0 +1,38 @@
+[project]
+name = "mcp-audit"
+version = "0.1.0"
+description = "Audit MCP server configurations against an access policy, with verifiable evidence."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Mohamed Taha Mazzir" }]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+mcp-audit = "mcp_audit.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: errors and pyflakes, I: import order, B: likely bugs, UP: modern syntax, S: security (bandit rules)
+select = ["E", "F", "I", "B", "UP", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is the point of a test
