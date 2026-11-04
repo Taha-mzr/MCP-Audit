@@ -16,9 +16,7 @@ def _discover(args: argparse.Namespace) -> Discovery:
     if args.config:
         result = Discovery()
         for path in args.config:
-            found = read_config_file(path.expanduser())
-            result.servers += found.servers
-            result.sources += found.sources
+            result.merge(read_config_file(path.expanduser()))
         return result
     return discover_known(Path.home(), Path.cwd())
 
@@ -51,13 +49,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     discover = sub.add_parser(
         "discover",
         help="list the MCP servers to audit, without starting them",
-        description="Without options, reads the Claude Desktop and Claude Code configurations.",
+        description=(
+            "Without options, reads the configuration files of Claude Desktop, Claude Code, "
+            "Cursor, VS Code, GitHub Copilot, Gemini CLI and Codex that exist."
+        ),
     )
     discover.add_argument(
         "--config",
         type=Path,
         action="append",
-        help="a configuration file with an mcpServers object (repeatable)",
+        help="a configuration file (JSON or TOML) listing MCP servers (repeatable)",
     )
     discover.add_argument(
         "--json", action="store_true", help="print the result as JSON instead of text"

@@ -6,21 +6,33 @@ works on servers, and discovery only answers "which servers, started how?".
 
 Sources, all producing the same ServerSpec:
 
-- the known configuration files of Claude Desktop and Claude Code;
-- any configuration file given by the user that uses the common ``mcpServers`` format;
+- the known configuration files of the applications listed in ``known_files``;
+- any configuration file given by the user (``mcpServers``, ``servers`` or ``mcp_servers``);
 - a command typed by the user, for applications whose configuration is not a readable file.
 
-Paths follow the official documentation, checked on 2026-11-04:
-https://modelcontextprotocol.io/docs/develop/connect-local-servers (Claude Desktop) and
-https://code.claude.com/docs/en/mcp (Claude Code).
+Paths and formats follow each application's official documentation, checked on 2026-11-04:
 
-Values of environment variables are never kept: they often hold tokens. Only their names are.
+- Claude Desktop: https://modelcontextprotocol.io/docs/develop/connect-local-servers
+- Claude Code: https://code.claude.com/docs/en/mcp
+- Cursor: https://docs.cursor.com/context/model-context-protocol
+- VS Code: https://code.visualstudio.com/docs/agents/reference/mcp-configuration
+- Gemini CLI: https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md
+- Codex CLI: https://developers.openai.com/codex/mcp
+
+Not covered yet, because the location was not confirmed in official documentation: Windsurf,
+and the VS Code user-profile mcp.json.
+
+Values of environment variables and headers are never kept: they often hold tokens. Only their
+names are.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tomllib
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
@@ -34,12 +46,21 @@ class Source(StrEnum):
     CLAUDE_DESKTOP = "claude_desktop"
     CLAUDE_CODE_USER = "claude_code_user"  # ~/.claude.json, top-level mcpServers
     CLAUDE_CODE_LOCAL = "claude_code_local"  # ~/.claude.json, projects[<dir>].mcpServers
-    CLAUDE_CODE_PROJECT = "claude_code_project"  # <dir>/.mcp.json
+    PROJECT_MCP_JSON = "project_mcp_json"  # <dir>/.mcp.json, read by Claude Code and VS Code
+    CURSOR_USER = "cursor_user"
+    CURSOR_PROJECT = "cursor_project"
+    VSCODE_WORKSPACE = "vscode_workspace"
+    COPILOT_USER = "copilot_user"
+    GEMINI_USER = "gemini_user"
+    GEMINI_PROJECT = "gemini_project"
+    CODEX_USER = "codex_user"
+    CODEX_PROJECT = "codex_project"
     CONFIG_FILE = "config_file"  # a file given with --config
     COMMAND_LINE = "command_line"  # a command typed by the user
 
 
 Transport = Literal["stdio", "http", "sse", "unknown"]
+Format = Literal["json", "toml"]
 
 # Values of "type" seen in configurations, mapped to the transport they mean.
 _TRANSPORTS: dict[str, Transport] = {
@@ -48,6 +69,9 @@ _TRANSPORTS: dict[str, Transport] = {
     "streamable-http": "http",
     "sse": "sse",
 }
+
+# Top-level keys that hold the servers, depending on the application.
+SERVER_KEYS = ("mcpServers", "servers", "mcp_servers")
 
 
 class ServerSpec(Strict):
@@ -77,6 +101,10 @@ class Discovery(Strict):
     servers: list[ServerSpec] = Field(default_factory=list)
     sources: list[SourceStatus] = Field(default_factory=list)
 
+    def merge(self, other: Discovery) -> None:
+        self.servers += other.servers
+        self.sources += other.sources
+
 
 # --- Parsing ---------------------------------------------------------------------
 
@@ -87,15 +115,17 @@ def _transport(entry: dict[str, Any]) -> Transport:
         return _TRANSPORTS.get(declared, "unknown")
     if "command" in entry:
         return "stdio"
+    if "httpUrl" in entry:  # Gemini CLI's name for a streamable HTTP endpoint
+        return "http"
     return "unknown"  # a url without a type is ambiguous: do not guess
 
 
 def parse_servers(
     block: object, source: Source, config_path: Path | None
 ) -> tuple[list[ServerSpec], list[str]]:
-    """Turn an ``mcpServers`` object into specs. Returns the specs and one note per bad entry."""
+    """Turn a servers object into specs. Returns the specs and one note per bad entry."""
     if not isinstance(block, dict):
-        return [], ["mcpServers is not an object"]
+        return [], ["the servers entry is not an object"]
     specs: list[ServerSpec] = []
     problems: list[str] = []
     for name, entry in block.items():
@@ -111,7 +141,7 @@ def parse_servers(
             problems.append(f"{name}: env is not an object")
             continue
         command = entry.get("command")
-        url = entry.get("url")
+        url = entry.get("url", entry.get("httpUrl"))
         specs.append(
             ServerSpec(
                 name=str(name),
@@ -127,12 +157,49 @@ def parse_servers(
     return specs, problems
 
 
-def _read(path: Path, source: Source) -> tuple[dict[str, Any] | None, SourceStatus]:
+def strip_jsonc(text: str) -> str:
+    """Remove // and /* */ comments and trailing commas, leaving strings untouched.
+
+    VS Code reads its mcp.json as JSON with comments; plain json.loads would reject it.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i : j + 1])
+            i = j + 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            i = n if end == -1 else end + 2
+        elif c == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "}]":
+                i += 1  # trailing comma
+            else:
+                out.append(c)
+                i += 1
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _read(path: Path, source: Source, fmt: Format) -> tuple[dict[str, Any] | None, SourceStatus]:
     if not path.is_file():
         return None, SourceStatus(source=source, path=str(path), status="missing")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        text = path.read_text(encoding="utf-8")
+        data = tomllib.loads(text) if fmt == "toml" else json.loads(strip_jsonc(text))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:  # JSON and TOML errors included
         detail = f"{type(exc).__name__}: {exc}"
         return None, SourceStatus(source=source, path=str(path), status="invalid", detail=detail)
     if not isinstance(data, dict):
@@ -157,6 +224,14 @@ def _collect(
 # --- Sources ---------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class KnownFile:
+    source: Source
+    path: Path
+    fmt: Format
+    key: str  # top-level key that holds the servers
+
+
 def claude_desktop_config(home: Path, platform: str = sys.platform) -> Path:
     if platform == "darwin":
         return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
@@ -165,43 +240,95 @@ def claude_desktop_config(home: Path, platform: str = sys.platform) -> Path:
     return home / ".config" / "Claude" / "claude_desktop_config.json"
 
 
-def read_config_file(path: Path, source: Source = Source.CONFIG_FILE) -> Discovery:
-    """Any file whose top level has an ``mcpServers`` object."""
+def known_files(
+    home: Path,
+    project_dir: Path,
+    platform: str = sys.platform,
+    env: dict[str, str] | None = None,
+) -> list[KnownFile]:
+    """Configuration files read without being asked, for the applications covered so far."""
+    env = dict(os.environ) if env is None else env
+    copilot_home = Path(env["COPILOT_HOME"]) if env.get("COPILOT_HOME") else home / ".copilot"
+    return [
+        KnownFile(
+            Source.CLAUDE_DESKTOP, claude_desktop_config(home, platform), "json", "mcpServers"
+        ),
+        KnownFile(Source.PROJECT_MCP_JSON, project_dir / ".mcp.json", "json", "mcpServers"),
+        KnownFile(Source.CURSOR_USER, home / ".cursor" / "mcp.json", "json", "mcpServers"),
+        KnownFile(
+            Source.CURSOR_PROJECT, project_dir / ".cursor" / "mcp.json", "json", "mcpServers"
+        ),
+        KnownFile(Source.VSCODE_WORKSPACE, project_dir / ".vscode" / "mcp.json", "json", "servers"),
+        KnownFile(Source.COPILOT_USER, copilot_home / "mcp-config.json", "json", "mcpServers"),
+        KnownFile(Source.GEMINI_USER, home / ".gemini" / "settings.json", "json", "mcpServers"),
+        KnownFile(
+            Source.GEMINI_PROJECT, project_dir / ".gemini" / "settings.json", "json", "mcpServers"
+        ),
+        KnownFile(Source.CODEX_USER, home / ".codex" / "config.toml", "toml", "mcp_servers"),
+        KnownFile(
+            Source.CODEX_PROJECT, project_dir / ".codex" / "config.toml", "toml", "mcp_servers"
+        ),
+    ]
+
+
+def _read_known(known: KnownFile) -> Discovery:
     result = Discovery()
-    data, status = _read(path, source)
-    _collect(result, None if data is None else data.get("mcpServers", {}), source, path, status)
+    data, status = _read(known.path, known.source, known.fmt)
+    _collect(
+        result,
+        None if data is None else data.get(known.key, {}),
+        known.source,
+        known.path,
+        status,
+    )
     return result
 
 
-def discover_known(home: Path, project_dir: Path, platform: str = sys.platform) -> Discovery:
-    """Read the configuration files of Claude Desktop and Claude Code that exist."""
+def read_config_file(path: Path, source: Source = Source.CONFIG_FILE) -> Discovery:
+    """A file given by the user: TOML if it ends in .toml, JSON (comments allowed) otherwise.
+
+    The servers are taken from the first of mcpServers, servers or mcp_servers that is present.
+    """
+    fmt: Format = "toml" if path.suffix == ".toml" else "json"
     result = Discovery()
+    data, status = _read(path, source, fmt)
+    block: object = None
+    if data is not None:
+        key = next((k for k in SERVER_KEYS if k in data), None)
+        block = data[key] if key else {}
+    _collect(result, block, source, path, status)
+    return result
 
-    desktop = read_config_file(claude_desktop_config(home, platform), Source.CLAUDE_DESKTOP)
-    result.servers += desktop.servers
-    result.sources += desktop.sources
 
+def _claude_code_user_and_local(home: Path, project_dir: Path) -> Discovery:
+    """~/.claude.json holds user servers at the top and local ones under projects[<dir>]."""
+    result = Discovery()
     claude_json = home / ".claude.json"
-    data, status = _read(claude_json, Source.CLAUDE_CODE_USER)
-    _collect(
-        result,
-        None if data is None else data.get("mcpServers", {}),
-        Source.CLAUDE_CODE_USER,
-        claude_json,
-        status,
-    )
+    data, status = _read(claude_json, Source.CLAUDE_CODE_USER, "json")
+    block = None if data is None else data.get("mcpServers", {})
+    _collect(result, block, Source.CLAUDE_CODE_USER, claude_json, status)
     if data is not None:
         projects = data.get("projects", {})
         project = projects.get(str(project_dir), {}) if isinstance(projects, dict) else {}
-        block = project.get("mcpServers", {}) if isinstance(project, dict) else {}
+        local_block = project.get("mcpServers", {}) if isinstance(project, dict) else {}
         local = SourceStatus(
             source=Source.CLAUDE_CODE_LOCAL, path=f"{claude_json}#{project_dir}", status="read"
         )
-        _collect(result, block, Source.CLAUDE_CODE_LOCAL, claude_json, local)
+        _collect(result, local_block, Source.CLAUDE_CODE_LOCAL, claude_json, local)
+    return result
 
-    project_file = read_config_file(project_dir / ".mcp.json", Source.CLAUDE_CODE_PROJECT)
-    result.servers += project_file.servers
-    result.sources += project_file.sources
+
+def discover_known(
+    home: Path,
+    project_dir: Path,
+    platform: str = sys.platform,
+    env: dict[str, str] | None = None,
+) -> Discovery:
+    """Read every known configuration file that exists. Missing ones are listed, not errors."""
+    result = Discovery()
+    result.merge(_claude_code_user_and_local(home, project_dir))
+    for known in known_files(home, project_dir, platform, env):
+        result.merge(_read_known(known))
     return result
 
 
