@@ -14,7 +14,9 @@ Status rules used here:
   local folder to check).
 
 References: OWASP MCP Top 10, edition 2025 (https://owasp.org/www-project-mcp-top-10/);
-CWE-22 for C1, CWE-798 for C2; OSV.dev for C4.
+CWE-22 for C1, CWE-798 and the gitleaks rules for C2 (see secrets.py), OSV.dev for C4.
+The lists of broad or sensitive folders (C1) and of risky launches (C5) are this project's own
+choices, not taken from a published rule set: review them when extending the checks.
 """
 
 from __future__ import annotations
