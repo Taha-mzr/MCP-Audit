@@ -11,6 +11,10 @@ left to each check:
 - In the lab, a failed open of a forbidden path is never enough to confirm an access.
 - The analysis of the real configuration and the lab reproduction stay in separate sections,
   and the real-configuration section only accepts configuration evidence.
+- A confirmed lab finding states the access it proves, backed by the evidence that proves it:
+  a disk snapshot for a write, the canary in the response for a returned read, a syscall
+  trace for a read that was not returned.
+- A check cannot pass for a server that has a confirmed finding for that check.
 - A check that was not run, was inconclusive or passed with missing evidence says why.
 
 Regenerate the committed JSON Schema after any change:
@@ -55,6 +59,7 @@ class Status(StrEnum):
 # A finding reports a problem. Passing, inconclusive and skipped outcomes are CheckRun results.
 FINDING_STATUSES = frozenset({Status.CONFIRMED, Status.NEEDS_REVIEW})
 STATUSES_NEEDING_REASON = frozenset({Status.PASSED_LIMITED, Status.INCONCLUSIVE, Status.NOT_RUN})
+PASSING_STATUSES = frozenset({Status.PASSED, Status.PASSED_LIMITED})
 
 
 class FindingKind(StrEnum):
@@ -97,6 +102,14 @@ class ObservedAccess(StrEnum):
 PROVEN_ACCESS = frozenset(
     {ObservedAccess.READ_NOT_RETURNED, ObservedAccess.READ_RETURNED, ObservedAccess.WRITE}
 )
+
+# The evidence that is sufficient to prove each access. Another source may come with it, but a
+# CONFIRMED finding claiming this access must carry this one.
+SUFFICIENT_SOURCE = {
+    ObservedAccess.READ_NOT_RETURNED: EvidenceSource.SYSCALL_TRACE,
+    ObservedAccess.READ_RETURNED: EvidenceSource.RETURNED_CONTENT,
+    ObservedAccess.WRITE: EvidenceSource.DISK_SNAPSHOT,
+}
 
 
 # --- Findings and evidence -----------------------------------------------------
@@ -141,6 +154,9 @@ class Finding(Strict):
                 raise ValueError(
                     f"CONFIRMED needs a proven read or write, not {self.observed_access}"
                 )
+            needed = SUFFICIENT_SOURCE.get(self.observed_access)
+            if needed is not None and not any(e.source is needed for e in self.evidence):
+                raise ValueError(f"{self.observed_access} is only proven by {needed} evidence")
         for tag in self.owasp:
             if not (len(tag) == 5 and tag.startswith("MCP") and tag[3:].isdigit()):
                 raise ValueError(f"unknown OWASP MCP category: {tag!r}")
@@ -165,6 +181,16 @@ class CheckRun(Strict):
 # --- Report sections -----------------------------------------------------------
 
 
+def _no_pass_with_confirmed_finding(checks: list[CheckRun], findings: list[Finding]) -> None:
+    """A check cannot pass for a server while a confirmed finding exists for that same pair."""
+    confirmed = {(f.check_id, f.server) for f in findings if f.status is Status.CONFIRMED}
+    for run in checks:
+        if run.status in PASSING_STATUSES and (run.check_id, run.server) in confirmed:
+            raise ValueError(
+                f"{run.check_id} on {run.server} cannot be {run.status} with a confirmed finding"
+            )
+
+
 class RealConfigSection(Strict):
     """Static analysis of the user's actual configuration. Nothing is executed."""
 
@@ -178,6 +204,7 @@ class RealConfigSection(Strict):
                 raise ValueError(f"{f.check_id}: no access is observed in a static analysis")
             if any(e.source is not EvidenceSource.CONFIG for e in f.evidence):
                 raise ValueError(f"{f.check_id}: static findings only cite the configuration")
+        _no_pass_with_confirmed_finding(self.checks, self.findings)
         return self
 
 
@@ -198,6 +225,14 @@ class LabSection(Strict):
     checks: list[CheckRun] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _confirmed_lab_findings_say_what_was_accessed(self) -> Self:
+        for f in self.findings:
+            if f.status is Status.CONFIRMED and f.observed_access is None:
+                raise ValueError(f"{f.check_id}: a confirmed lab finding states observed_access")
+        _no_pass_with_confirmed_finding(self.checks, self.findings)
+        return self
+
 
 class Report(Strict):
     schema_version: Literal["0.1"] = REPORT_SCHEMA_VERSION
@@ -205,8 +240,21 @@ class Report(Strict):
     generated_at: datetime
     real_config: RealConfigSection
     lab_reproduction: LabSection | None = None  # None when no dynamic test was attempted
+    # Edition of the OWASP MCP Top 10 that the MCPnn tags and the coverage refer to: the list can
+    # be renumbered between editions, so a tag means nothing without it.
+    owasp_mcp_top10_version: str | None = None
     owasp_coverage: dict[str, str] = Field(default_factory=dict)  # category -> coverage note
     disclaimer: Literal[DISCLAIMER] = DISCLAIMER  # type: ignore[valid-type]
+
+    @model_validator(mode="after")
+    def _owasp_references_name_their_edition(self) -> Self:
+        sections: list[RealConfigSection | LabSection] = [self.real_config]
+        if self.lab_reproduction is not None:
+            sections.append(self.lab_reproduction)
+        tagged = any(f.owasp for s in sections for f in s.findings)
+        if (tagged or self.owasp_coverage) and not self.owasp_mcp_top10_version:
+            raise ValueError("OWASP references need owasp_mcp_top10_version")
+        return self
 
 
 def report_json_schema() -> dict[str, Any]:
