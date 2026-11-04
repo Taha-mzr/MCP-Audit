@@ -2,7 +2,7 @@
 
 Two signals, from the strongest to the weakest:
 
-- the value has the shape of a known token (a small subset of the gitleaks rules,
+- the value has the shape of a known token (13 rules copied from gitleaks,
   https://github.com/gitleaks/gitleaks): the secret is certainly there;
 - the name says it is a secret (API_KEY, --token...) and the value is a literal: probably one.
 
@@ -20,15 +20,30 @@ from mcp_audit.models import Strict
 
 MASK = "***"
 
-# Known token shapes. Kept short and specific to avoid flagging ordinary arguments.
+# Known token shapes, copied from the gitleaks default rules (MIT licence), read on 2026-11-04 at
+# https://raw.githubusercontent.com/gitleaks/gitleaks/master/config/gitleaks.toml
+# Only the token itself is kept from each rule (no surrounding delimiters); values are matched
+# whole. Rule ids are the gitleaks ids.
 TOKEN_PATTERNS: dict[str, re.Pattern[str]] = {
-    "github_token": re.compile(r"^(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})$"),
-    "anthropic_api_key": re.compile(r"^sk-ant-[A-Za-z0-9_-]{20,}$"),
-    "openai_api_key": re.compile(r"^sk-(proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}$"),
-    "aws_access_key_id": re.compile(r"^(AKIA|ASIA)[0-9A-Z]{16}$"),
-    "slack_token": re.compile(r"^xox[baprs]-[A-Za-z0-9-]{10,}$"),
-    "google_api_key": re.compile(r"^AIza[0-9A-Za-z_-]{35}$"),
-    "stripe_secret_key": re.compile(r"^(sk|rk)_live_[0-9A-Za-z]{20,}$"),
+    rule_id: re.compile(pattern)
+    for rule_id, pattern in {
+        "github-pat": r"ghp_[0-9a-zA-Z]{36}",
+        "github-fine-grained-pat": r"github_pat_\w{82}",
+        "github-oauth": r"gho_[0-9a-zA-Z]{36}",
+        "github-app-token": r"(?:ghu|ghs)_[0-9a-zA-Z]{36}",
+        "github-refresh-token": r"ghr_[0-9a-zA-Z]{36}",
+        "anthropic-api-key": r"sk-ant-api03-[a-zA-Z0-9_\-]{93}AA",
+        "anthropic-admin-api-key": r"sk-ant-admin01-[a-zA-Z0-9_\-]{93}AA",
+        "openai-api-key": (
+            r"sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ"
+            r"(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20}"
+        ),
+        "aws-access-token": r"(?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16}",
+        "slack-bot-token": r"xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*",
+        "slack-user-token": r"xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}",
+        "gcp-api-key": r"AIza[\w-]{35}",
+        "stripe-access-token": r"(?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99}",
+    }.items()
 }
 
 SECRET_NAME = re.compile(
@@ -53,7 +68,7 @@ class SecretHint(Strict):
     """Where a secret sits and why we think so. Never the value."""
 
     location: str  # "env:GITHUB_TOKEN", "header:Authorization", "arg:3"
-    kind: str  # a TOKEN_PATTERNS key, or "secret_name" when only the name gives it away
+    kind: str  # a gitleaks rule id from TOKEN_PATTERNS, or "secret_name" (only the name says so)
     confidence: Literal["pattern", "name"]
 
 
@@ -62,7 +77,7 @@ def token_kind(value: str) -> str | None:
     if value.lower().startswith("bearer "):
         value = value[7:].strip()
     for kind, pattern in TOKEN_PATTERNS.items():
-        if pattern.match(value):
+        if pattern.fullmatch(value):
             return kind
     return None
 

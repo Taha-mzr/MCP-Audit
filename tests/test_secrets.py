@@ -10,10 +10,11 @@ FAKE_AWS = "AKIA" + "FAKEFAKEFAKEFAKE"
 @pytest.mark.parametrize(
     ("value", "kind"),
     [
-        (FAKE_GITHUB, "github_token"),
-        ("Bearer " + FAKE_GITHUB, "github_token"),
-        (FAKE_AWS, "aws_access_key_id"),
-        ("sk-ant-" + "x" * 30, "anthropic_api_key"),
+        (FAKE_GITHUB, "github-pat"),
+        ("Bearer " + FAKE_GITHUB, "github-pat"),
+        (FAKE_AWS, "aws-access-token"),
+        ("sk-ant-api03-" + "x" * 93 + "AA", "anthropic-api-key"),
+        ("sk-ant-" + "x" * 30, None),  # too short for the gitleaks rule,
         ("/Users/taha/notes", None),
         ("-y", None),
     ],

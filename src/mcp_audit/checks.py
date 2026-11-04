@@ -214,7 +214,11 @@ def check_c2(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
     findings = []
     for hint in spec.secrets:
         certain = hint.confidence == "pattern"
-        what = hint.kind.replace("_", " ") if certain else "a value named like a secret"
+        what = (
+            f"a token matching gitleaks rule {hint.kind}"
+            if certain
+            else "a value named like a secret"
+        )
         findings.append(
             Finding(
                 check_id="C2",
