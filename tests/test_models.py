@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from mcp_audit.models import (
     DISCLAIMER,
+    INDEPENDENT_SOURCES,
     CheckRun,
     Evidence,
     EvidenceSource,
@@ -57,8 +58,8 @@ def test_server_claim_alone_never_confirms() -> None:
 
 
 def test_server_claim_is_kept_as_context_next_to_real_evidence() -> None:
-    f = finding(evidence=[ev(EvidenceSource.SERVER_CLAIM), ev(EvidenceSource.DISK_SNAPSHOT)])
-    assert [e.source for e in f.evidence] == ["server_claim", "disk_snapshot"]
+    f = finding(evidence=[ev(EvidenceSource.SERVER_CLAIM), ev(EvidenceSource.RETURNED_CONTENT)])
+    assert [e.source for e in f.evidence] == ["server_claim", "returned_content"]
 
 
 @pytest.mark.parametrize(
@@ -68,6 +69,31 @@ def test_attempt_without_proven_access_cannot_be_confirmed(access: ObservedAcces
     # EACCES/EPERM on open shows the server did not stop the request, not that it read anything.
     with pytest.raises(ValidationError, match="proven read or write"):
         finding(evidence=[ev(EvidenceSource.SYSCALL_TRACE)], observed_access=access)
+
+
+@pytest.mark.parametrize(
+    ("access", "proof"),
+    [
+        (ObservedAccess.WRITE, EvidenceSource.DISK_SNAPSHOT),
+        (ObservedAccess.READ_RETURNED, EvidenceSource.RETURNED_CONTENT),
+        (ObservedAccess.READ_NOT_RETURNED, EvidenceSource.SYSCALL_TRACE),
+    ],
+)
+def test_each_proven_access_is_confirmed_by_its_own_evidence(
+    access: ObservedAccess, proof: EvidenceSource
+) -> None:
+    assert finding(evidence=[ev(proof)], observed_access=access).observed_access is access
+    others = [ev(s) for s in INDEPENDENT_SOURCES if s is not proof]
+    with pytest.raises(ValidationError, match="only proven by"):
+        finding(evidence=others, observed_access=access)
+
+
+def test_write_is_not_proven_by_a_returned_read() -> None:
+    # The canary coming back shows a read; only the disk shows that a file was written.
+    with pytest.raises(ValidationError, match="only proven by disk_snapshot"):
+        finding(
+            evidence=[ev(EvidenceSource.RETURNED_CONTENT)], observed_access=ObservedAccess.WRITE
+        )
 
 
 def test_failed_open_is_reported_as_needs_review() -> None:
@@ -120,7 +146,11 @@ def test_static_section_rejects_lab_evidence() -> None:
 
 
 def test_static_section_rejects_observed_access() -> None:
-    static = finding(evidence=[ev(EvidenceSource.CONFIG)], kind=FindingKind.CONFIG_GAP)
+    static = finding(
+        status=Status.NEEDS_REVIEW,
+        evidence=[ev(EvidenceSource.CONFIG)],
+        kind=FindingKind.CONFIG_GAP,
+    )
     with pytest.raises(ValidationError, match="static analysis"):
         RealConfigSection(findings=[static])
 
@@ -135,6 +165,43 @@ def test_static_finding_in_static_section() -> None:
     assert RealConfigSection(findings=[c1]).findings == [c1]
 
 
+def test_confirmed_lab_finding_states_observed_access() -> None:
+    with pytest.raises(ValidationError, match="states observed_access"):
+        LabSection(findings=[finding(observed_access=None)])
+
+
+def test_lab_hint_may_omit_observed_access() -> None:
+    hint = finding(status=Status.NEEDS_REVIEW, kind=FindingKind.HINT, observed_access=None)
+    assert LabSection(findings=[hint]).findings == [hint]
+
+
+# --- A check cannot pass and be confirmed at once ------------------------------------
+
+
+@pytest.mark.parametrize("status", [Status.PASSED, Status.PASSED_LIMITED])
+def test_lab_check_cannot_pass_with_a_confirmed_finding(status: Status) -> None:
+    run = CheckRun(check_id="D1", server="filesystem", status=status, reason="no trace")
+    with pytest.raises(ValidationError, match="confirmed finding"):
+        LabSection(checks=[run], findings=[finding()])
+
+
+def test_static_check_cannot_pass_with_a_confirmed_finding() -> None:
+    c1 = finding(
+        check_id="C1",
+        kind=FindingKind.CONFIG_GAP,
+        evidence=[ev(EvidenceSource.CONFIG)],
+        observed_access=None,
+    )
+    run = CheckRun(check_id="C1", server="filesystem", status=Status.PASSED)
+    with pytest.raises(ValidationError, match="confirmed finding"):
+        RealConfigSection(checks=[run], findings=[c1])
+
+
+def test_same_check_may_pass_on_another_server() -> None:
+    run = CheckRun(check_id="D1", server="other", status=Status.PASSED)
+    assert LabSection(checks=[run], findings=[finding()]).checks == [run]
+
+
 # --- Report --------------------------------------------------------------------------
 
 
@@ -142,6 +209,7 @@ def make_report() -> Report:
     return Report(
         tool_version="0.1.0",
         generated_at=datetime(2026, 10, 28, tzinfo=UTC),
+        owasp_mcp_top10_version="2025",
         real_config=RealConfigSection(
             checks=[CheckRun(check_id="C1", server="filesystem", status=Status.PASSED)]
         ),
@@ -168,6 +236,13 @@ def test_unknown_fields_are_rejected() -> None:
     data = json.loads(make_report().model_dump_json())
     data["secure"] = True
     with pytest.raises(ValidationError):
+        Report.model_validate(data)
+
+
+def test_owasp_tags_need_the_top10_edition() -> None:
+    data = json.loads(make_report().model_dump_json())
+    data["owasp_mcp_top10_version"] = None
+    with pytest.raises(ValidationError, match="owasp_mcp_top10_version"):
         Report.model_validate(data)
 
 

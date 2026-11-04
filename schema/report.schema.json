@@ -359,6 +359,18 @@
       ],
       "default": null
     },
+    "owasp_mcp_top10_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Owasp Mcp Top10 Version"
+    },
     "owasp_coverage": {
       "additionalProperties": {
         "type": "string"
