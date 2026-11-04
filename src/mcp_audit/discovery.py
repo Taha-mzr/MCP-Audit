@@ -23,7 +23,8 @@ Not covered yet, because the location was not confirmed in official documentatio
 and the VS Code user-profile mcp.json.
 
 Values of environment variables and headers are never kept: they often hold tokens. Only their
-names are.
+names are, with a hint when a value is a secret written in clear. Secret values found in the
+command line are replaced by ``***``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from mcp_audit.models import Strict
+from mcp_audit.secrets import SecretHint, classify, mask_args
 
 
 class Source(StrEnum):
@@ -82,9 +84,16 @@ class ServerSpec(Strict):
     config_path: str | None = None  # file it was read from; None for a typed command
     transport: Transport
     command: str | None = None
-    args: list[str] = Field(default_factory=list)
+    args: list[str] = Field(default_factory=list)  # secret values replaced by ***
     env_keys: list[str] = Field(default_factory=list)  # names only, never values
+    header_keys: list[str] = Field(default_factory=list)  # names only, never values
     url: str | None = None
+    secrets: list[SecretHint] = Field(default_factory=list)  # secrets found in clear, no value
+
+    @property
+    def key(self) -> str:
+        """Unique name in a report: the same server name can appear in several applications."""
+        return f"{self.source}:{self.name}"
 
 
 class SourceStatus(Strict):
@@ -134,14 +143,24 @@ def parse_servers(
             continue
         args = entry.get("args", [])
         env = entry.get("env", {})
+        headers = entry.get("headers", entry.get("http_headers", {}))
         if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
             problems.append(f"{name}: args is not a list of strings")
             continue
-        if not isinstance(env, dict):
-            problems.append(f"{name}: env is not an object")
+        if not isinstance(env, dict) or not isinstance(headers, dict):
+            problems.append(f"{name}: env or headers is not an object")
             continue
         command = entry.get("command")
         url = entry.get("url", entry.get("httpUrl"))
+        masked_args, secrets = mask_args(args)
+        for key, value in env.items():
+            hint = classify(f"env:{key}", str(key), value)
+            if hint:
+                secrets.append(hint)
+        for key, value in headers.items():
+            hint = classify(f"header:{key}", str(key), value)
+            if hint:
+                secrets.append(hint)
         specs.append(
             ServerSpec(
                 name=str(name),
@@ -149,9 +168,11 @@ def parse_servers(
                 config_path=str(config_path) if config_path else None,
                 transport=_transport(entry),
                 command=command if isinstance(command, str) else None,
-                args=args,
+                args=masked_args,
                 env_keys=sorted(str(k) for k in env),
+                header_keys=sorted(str(k) for k in headers),
                 url=url if isinstance(url, str) else None,
+                secrets=secrets,
             )
         )
     return specs, problems
@@ -336,10 +357,12 @@ def from_command(argv: list[str], name: str = "command-line") -> ServerSpec:
     """A server given as the command that starts it, for any application."""
     if not argv:
         raise ValueError("an empty command starts no server")
+    args, secrets = mask_args(list(argv[1:]))
     return ServerSpec(
         name=name,
         source=Source.COMMAND_LINE,
         transport="stdio",
         command=argv[0],
-        args=list(argv[1:]),
+        args=args,
+        secrets=secrets,
     )
