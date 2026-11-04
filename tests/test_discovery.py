@@ -11,6 +11,7 @@ from mcp_audit.discovery import (
     from_command,
     parse_servers,
     read_config_file,
+    strip_jsonc,
 )
 
 FILESYSTEM = {
@@ -122,27 +123,122 @@ def test_all_claude_sources_are_found(tmp_path: Path) -> None:
     )
     write(project / ".mcp.json", {"mcpServers": {"team-fs": FILESYSTEM}})
 
-    result = discover_known(home, project, "darwin")
+    result = discover_known(home, project, "darwin", env={})
 
     assert {(s.name, s.source) for s in result.servers} == {
         ("filesystem", Source.CLAUDE_DESKTOP),
         ("github", Source.CLAUDE_CODE_USER),
         ("local-fs", Source.CLAUDE_CODE_LOCAL),
-        ("team-fs", Source.CLAUDE_CODE_PROJECT),
+        ("team-fs", Source.PROJECT_MCP_JSON),
     }
 
 
 def test_nothing_installed_lists_every_source_as_missing(tmp_path: Path) -> None:
-    result = discover_known(tmp_path, tmp_path, "darwin")
+    result = discover_known(tmp_path, tmp_path, "darwin", env={})
     assert result.servers == []
     assert {s.status for s in result.sources} == {"missing"}
-    assert len(result.sources) == 3  # Desktop, ~/.claude.json, .mcp.json
+    assert len(result.sources) == 11  # ~/.claude.json + the 10 known files
 
 
 def test_other_projects_are_not_mixed_in(tmp_path: Path) -> None:
     other = {"projects": {"/some/other/project": {"mcpServers": {"x": FILESYSTEM}}}}
     write(tmp_path / ".claude.json", other)
-    assert discover_known(tmp_path, tmp_path / "here", "darwin").servers == []
+    assert discover_known(tmp_path, tmp_path / "here", "darwin", env={}).servers == []
+
+
+# --- Other applications -------------------------------------------------------------
+
+
+def found(home: Path, project: Path) -> set[tuple[str, Source]]:
+    return {(s.name, s.source) for s in discover_known(home, project, "darwin", env={}).servers}
+
+
+def test_cursor_user_and_project(tmp_path: Path) -> None:
+    home, project = tmp_path / "home", tmp_path / "proj"
+    write(home / ".cursor" / "mcp.json", {"mcpServers": {"a": FILESYSTEM}})
+    write(project / ".cursor" / "mcp.json", {"mcpServers": {"b": FILESYSTEM}})
+    assert found(home, project) == {("a", Source.CURSOR_USER), ("b", Source.CURSOR_PROJECT)}
+
+
+def test_vscode_uses_servers_key_and_allows_comments(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    path = project / ".vscode" / "mcp.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        """{
+  // VS Code reads this file as JSON with comments
+  "servers": {
+    "fs": {"type": "stdio", "command": "npx", "args": ["server-filesystem"],},
+    /* a remote one */
+    "web": {"type": "http", "url": "https://example.invalid/mcp"},
+  },
+}""",
+        encoding="utf-8",
+    )
+    result = discover_known(tmp_path / "home", project, "darwin", env={})
+    assert {(s.name, s.transport) for s in result.servers} == {("fs", "stdio"), ("web", "http")}
+
+
+def test_copilot_home_is_honoured(tmp_path: Path) -> None:
+    custom = tmp_path / "custom-copilot"
+    write(custom / "mcp-config.json", {"mcpServers": {"c": FILESYSTEM}})
+    result = discover_known(tmp_path, tmp_path, "darwin", env={"COPILOT_HOME": str(custom)})
+    assert [(s.name, s.source) for s in result.servers] == [("c", Source.COPILOT_USER)]
+
+
+def test_gemini_http_url(tmp_path: Path) -> None:
+    write(
+        tmp_path / ".gemini" / "settings.json",
+        {"mcpServers": {"g": {"httpUrl": "http://localhost:3000/mcp"}}},
+    )
+    spec = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).servers[0]
+    assert (spec.source, spec.transport, spec.url) == (
+        Source.GEMINI_USER,
+        "http",
+        "http://localhost:3000/mcp",
+    )
+
+
+CODEX_TOML = """
+model = "some-model"
+
+[mcp_servers.fs]
+command = "npx"
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/taha/notes"]
+
+[mcp_servers.fs.env]
+API_KEY = "FAKE-TOKEN-NOT-A-SECRET-0000"
+"""
+
+
+def test_codex_toml(tmp_path: Path) -> None:
+    path = tmp_path / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(CODEX_TOML, encoding="utf-8")
+    spec = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).servers[0]
+    assert (spec.name, spec.source, spec.env_keys) == ("fs", Source.CODEX_USER, ["API_KEY"])
+    assert FAKE_TOKEN not in spec.model_dump_json()
+
+
+def test_config_option_reads_toml_and_servers_key(tmp_path: Path) -> None:
+    toml = tmp_path / "config.toml"
+    toml.write_text(CODEX_TOML, encoding="utf-8")
+    vscode = write(tmp_path / "mcp.json", {"servers": {"v": FILESYSTEM}})
+    assert [s.name for s in read_config_file(toml).servers] == ["fs"]
+    assert [s.name for s in read_config_file(vscode).servers] == ["v"]
+
+
+def test_jsonc_keeps_slashes_inside_strings() -> None:
+    text = '{"url": "https://a.invalid/x", "s": "a /* b */ c", } // end'
+    assert json.loads(strip_jsonc(text)) == {"url": "https://a.invalid/x", "s": "a /* b */ c"}
+
+
+def test_invalid_toml_is_reported_not_raised(tmp_path: Path) -> None:
+    path = tmp_path / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text("[mcp_servers.fs\n", encoding="utf-8")
+    statuses = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).sources
+    assert any(s.source is Source.CODEX_USER and s.status == "invalid" for s in statuses)
 
 
 # --- Typed command ---------------------------------------------------------------------
