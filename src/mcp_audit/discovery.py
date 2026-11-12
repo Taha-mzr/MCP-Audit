@@ -10,17 +10,22 @@ Sources, all producing the same ServerSpec:
 - any configuration file given by the user (``mcpServers``, ``servers`` or ``mcp_servers``);
 - a command typed by the user, for applications whose configuration is not a readable file.
 
-Paths and formats follow each application's official documentation, checked on 2026-11-04:
+Paths and formats follow each application's official documentation, read on 2026-11-09.
+docs/discovery.md lists every way to add a server per application, its source, and whether it
+is read here; ways whose storage is not documented (Claude Desktop extensions, plugins, the
+VS Code user profile, Windsurf...) are not read and are listed there as gaps.
 
 - Claude Desktop: https://modelcontextprotocol.io/docs/develop/connect-local-servers
-- Claude Code: https://code.claude.com/docs/en/mcp
-- Cursor: https://docs.cursor.com/context/model-context-protocol
-- VS Code: https://code.visualstudio.com/docs/agents/reference/mcp-configuration
-- Gemini CLI: https://github.com/google-gemini/gemini-cli/blob/main/docs/tools/mcp-server.md
-- Codex CLI: https://developers.openai.com/codex/mcp
+- Claude Code: https://code.claude.com/docs/en/mcp and https://code.claude.com/docs/en/managed-mcp
+- Cursor: https://cursor.com/docs/mcp
+- VS Code: https://code.visualstudio.com/docs/agents/reference/mcp-configuration and
+  https://code.visualstudio.com/docs/agents/run/manage-mcp-servers (dev containers)
+- Copilot CLI: https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers
+- Gemini CLI: https://geminicli.com/docs/cli/configuration/
+- Codex: https://learn.chatgpt.com/docs/config-file/config-reference
 
-Not covered yet, because the location was not confirmed in official documentation: Windsurf,
-and the VS Code user-profile mcp.json.
+Project files are read in the folder the command runs in and in every project folder that
+~/.claude.json lists, because Claude Code records there each project it was used in.
 
 Values of environment variables and headers are never kept: they often hold tokens. Only their
 names are, with a hint when a value is a secret written in clear. Secret values found in the
@@ -48,6 +53,7 @@ class Source(StrEnum):
     CLAUDE_DESKTOP = "claude_desktop"
     CLAUDE_CODE_USER = "claude_code_user"  # ~/.claude.json, top-level mcpServers
     CLAUDE_CODE_LOCAL = "claude_code_local"  # ~/.claude.json, projects[<dir>].mcpServers
+    CLAUDE_CODE_MANAGED = "claude_code_managed"  # managed-mcp.json, installed by an admin
     PROJECT_MCP_JSON = "project_mcp_json"  # <dir>/.mcp.json, read by Claude Code and VS Code
     CURSOR_USER = "cursor_user"
     CURSOR_PROJECT = "cursor_project"
@@ -55,8 +61,10 @@ class Source(StrEnum):
     COPILOT_USER = "copilot_user"
     GEMINI_USER = "gemini_user"
     GEMINI_PROJECT = "gemini_project"
+    GEMINI_SYSTEM = "gemini_system"  # system settings file, installed by an admin
     CODEX_USER = "codex_user"
     CODEX_PROJECT = "codex_project"
+    DEVCONTAINER = "devcontainer"  # devcontainer.json, customizations.vscode.mcp.servers
     CONFIG_FILE = "config_file"  # a file given with --config
     COMMAND_LINE = "command_line"  # a command typed by the user
 
@@ -82,6 +90,7 @@ class ServerSpec(Strict):
     name: str
     source: Source
     config_path: str | None = None  # file it was read from; None for a typed command
+    project: str | None = None  # project folder, for servers that belong to one project
     transport: Transport
     command: str | None = None
     args: list[str] = Field(default_factory=list)  # secret values replaced by ***
@@ -92,7 +101,10 @@ class ServerSpec(Strict):
 
     @property
     def key(self) -> str:
-        """Unique name in a report: the same server name can appear in several applications."""
+        """Unique name in a report: the same server name can appear in several applications
+        and in several projects."""
+        if self.project:
+            return f"{self.source}:{self.project}:{self.name}"
         return f"{self.source}:{self.name}"
 
 
@@ -130,7 +142,7 @@ def _transport(entry: dict[str, Any]) -> Transport:
 
 
 def parse_servers(
-    block: object, source: Source, config_path: Path | None
+    block: object, source: Source, config_path: Path | None, project: str | None = None
 ) -> tuple[list[ServerSpec], list[str]]:
     """Turn a servers object into specs. Returns the specs and one note per bad entry."""
     if not isinstance(block, dict):
@@ -166,6 +178,7 @@ def parse_servers(
                 name=str(name),
                 source=source,
                 config_path=str(config_path) if config_path else None,
+                project=project,
                 transport=_transport(entry),
                 command=command if isinstance(command, str) else None,
                 args=masked_args,
@@ -232,9 +245,14 @@ def _read(path: Path, source: Source, fmt: Format) -> tuple[dict[str, Any] | Non
 
 
 def _collect(
-    result: Discovery, block: object, source: Source, path: Path, status: SourceStatus
+    result: Discovery,
+    block: object,
+    source: Source,
+    path: Path,
+    status: SourceStatus,
+    project: str | None = None,
 ) -> None:
-    specs, problems = ([], []) if block is None else parse_servers(block, source, path)
+    specs, problems = ([], []) if block is None else parse_servers(block, source, path, project)
     status.servers = len(specs)
     if problems:
         status.detail = "; ".join(problems)
@@ -250,58 +268,126 @@ class KnownFile:
     source: Source
     path: Path
     fmt: Format
-    key: str  # top-level key that holds the servers
+    keys: tuple[str, ...]  # path of keys to the servers object, e.g. ("mcpServers",)
+    project: str | None = None  # set for files that belong to one project folder
 
 
-def claude_desktop_config(home: Path, platform: str = sys.platform) -> Path:
+def claude_desktop_config(
+    home: Path, platform: str = sys.platform, env: dict[str, str] | None = None
+) -> Path:
     if platform == "darwin":
         return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
     if platform.startswith("win"):
-        return home / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json"
+        env = {} if env is None else env
+        appdata = Path(env["APPDATA"]) if env.get("APPDATA") else home / "AppData" / "Roaming"
+        return appdata / "Claude" / "claude_desktop_config.json"
     return home / ".config" / "Claude" / "claude_desktop_config.json"
+
+
+def _default_system_root(platform: str) -> Path:
+    return Path("C:/") if platform.startswith("win") else Path("/")
+
+
+def claude_code_managed_config(platform: str, system_root: Path) -> Path:
+    """managed-mcp.json, per https://code.claude.com/docs/en/managed-mcp."""
+    if platform == "darwin":
+        return system_root / "Library" / "Application Support" / "ClaudeCode" / "managed-mcp.json"
+    if platform.startswith("win"):
+        return system_root / "Program Files" / "ClaudeCode" / "managed-mcp.json"
+    return system_root / "etc" / "claude-code" / "managed-mcp.json"
+
+
+def gemini_system_settings(platform: str, system_root: Path, env: dict[str, str]) -> Path:
+    """System settings file, per https://geminicli.com/docs/cli/configuration/."""
+    if env.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH"):
+        return Path(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"])
+    if platform == "darwin":
+        return system_root / "Library" / "Application Support" / "GeminiCli" / "settings.json"
+    if platform.startswith("win"):
+        return system_root / "ProgramData" / "gemini-cli" / "settings.json"
+    return system_root / "etc" / "gemini-cli" / "settings.json"
 
 
 def known_files(
     home: Path,
-    project_dir: Path,
     platform: str = sys.platform,
     env: dict[str, str] | None = None,
+    system_root: Path | None = None,
 ) -> list[KnownFile]:
-    """Configuration files read without being asked, for the applications covered so far."""
+    """Files of the user and of the machine, read without being asked."""
     env = dict(os.environ) if env is None else env
+    root = _default_system_root(platform) if system_root is None else system_root
     copilot_home = Path(env["COPILOT_HOME"]) if env.get("COPILOT_HOME") else home / ".copilot"
+    servers = ("mcpServers",)
     return [
         KnownFile(
-            Source.CLAUDE_DESKTOP, claude_desktop_config(home, platform), "json", "mcpServers"
+            Source.CLAUDE_DESKTOP, claude_desktop_config(home, platform, env), "json", servers
         ),
-        KnownFile(Source.PROJECT_MCP_JSON, project_dir / ".mcp.json", "json", "mcpServers"),
-        KnownFile(Source.CURSOR_USER, home / ".cursor" / "mcp.json", "json", "mcpServers"),
         KnownFile(
-            Source.CURSOR_PROJECT, project_dir / ".cursor" / "mcp.json", "json", "mcpServers"
+            Source.CLAUDE_CODE_MANAGED, claude_code_managed_config(platform, root), "json", servers
         ),
-        KnownFile(Source.VSCODE_WORKSPACE, project_dir / ".vscode" / "mcp.json", "json", "servers"),
-        KnownFile(Source.COPILOT_USER, copilot_home / "mcp-config.json", "json", "mcpServers"),
-        KnownFile(Source.GEMINI_USER, home / ".gemini" / "settings.json", "json", "mcpServers"),
+        KnownFile(Source.CURSOR_USER, home / ".cursor" / "mcp.json", "json", servers),
+        KnownFile(Source.COPILOT_USER, copilot_home / "mcp-config.json", "json", servers),
+        KnownFile(Source.GEMINI_USER, home / ".gemini" / "settings.json", "json", servers),
         KnownFile(
-            Source.GEMINI_PROJECT, project_dir / ".gemini" / "settings.json", "json", "mcpServers"
+            Source.GEMINI_SYSTEM, gemini_system_settings(platform, root, env), "json", servers
         ),
-        KnownFile(Source.CODEX_USER, home / ".codex" / "config.toml", "toml", "mcp_servers"),
+        KnownFile(Source.CODEX_USER, home / ".codex" / "config.toml", "toml", ("mcp_servers",)),
+    ]
+
+
+def project_files(project_dir: Path) -> list[KnownFile]:
+    """Files that belong to one project folder."""
+    p = str(project_dir)
+    servers = ("mcpServers",)
+    devcontainer = ("customizations", "vscode", "mcp", "servers")
+    return [
+        KnownFile(Source.PROJECT_MCP_JSON, project_dir / ".mcp.json", "json", servers, p),
+        KnownFile(Source.CURSOR_PROJECT, project_dir / ".cursor" / "mcp.json", "json", servers, p),
         KnownFile(
-            Source.CODEX_PROJECT, project_dir / ".codex" / "config.toml", "toml", "mcp_servers"
+            Source.VSCODE_WORKSPACE, project_dir / ".vscode" / "mcp.json", "json", ("servers",), p
+        ),
+        KnownFile(
+            Source.GEMINI_PROJECT, project_dir / ".gemini" / "settings.json", "json", servers, p
+        ),
+        KnownFile(
+            Source.CODEX_PROJECT,
+            project_dir / ".codex" / "config.toml",
+            "toml",
+            ("mcp_servers",),
+            p,
+        ),
+        KnownFile(
+            Source.DEVCONTAINER,
+            project_dir / ".devcontainer" / "devcontainer.json",
+            "json",
+            devcontainer,
+            p,
+        ),
+        KnownFile(Source.DEVCONTAINER, project_dir / ".devcontainer.json", "json", devcontainer, p),
+        # https://containers.dev/implementors/spec/ also allows one sub-folder level.
+        *(
+            KnownFile(Source.DEVCONTAINER, sub, "json", devcontainer, p)
+            for sub in sorted((project_dir / ".devcontainer").glob("*/devcontainer.json"))
         ),
     ]
+
+
+def _dig(data: dict[str, Any], keys: tuple[str, ...]) -> object:
+    """data[k1][k2]... or {} when a key is missing on the way."""
+    value: object = data
+    for key in keys:
+        if not isinstance(value, dict) or key not in value:
+            return {}
+        value = value[key]
+    return value
 
 
 def _read_known(known: KnownFile) -> Discovery:
     result = Discovery()
     data, status = _read(known.path, known.source, known.fmt)
-    _collect(
-        result,
-        None if data is None else data.get(known.key, {}),
-        known.source,
-        known.path,
-        status,
-    )
+    block = None if data is None else _dig(data, known.keys)
+    _collect(result, block, known.source, known.path, status, known.project)
     return result
 
 
@@ -321,22 +407,28 @@ def read_config_file(path: Path, source: Source = Source.CONFIG_FILE) -> Discove
     return result
 
 
-def _claude_code_user_and_local(home: Path, project_dir: Path) -> Discovery:
-    """~/.claude.json holds user servers at the top and local ones under projects[<dir>]."""
+def _claude_code_user_and_local(home: Path) -> tuple[Discovery, list[str]]:
+    """~/.claude.json holds user servers at the top and local ones under projects[<dir>].
+
+    Returns the servers found and the project folders listed in the file.
+    """
     result = Discovery()
     claude_json = home / ".claude.json"
     data, status = _read(claude_json, Source.CLAUDE_CODE_USER, "json")
     block = None if data is None else data.get("mcpServers", {})
     _collect(result, block, Source.CLAUDE_CODE_USER, claude_json, status)
-    if data is not None:
-        projects = data.get("projects", {})
-        project = projects.get(str(project_dir), {}) if isinstance(projects, dict) else {}
-        local_block = project.get("mcpServers", {}) if isinstance(project, dict) else {}
+    projects = {} if data is None else data.get("projects", {})
+    if not isinstance(projects, dict):
+        return result, []
+    for folder, project in projects.items():
+        local_block = project.get("mcpServers") if isinstance(project, dict) else None
+        if not local_block:
+            continue
         local = SourceStatus(
-            source=Source.CLAUDE_CODE_LOCAL, path=f"{claude_json}#{project_dir}", status="read"
+            source=Source.CLAUDE_CODE_LOCAL, path=f"{claude_json}#{folder}", status="read"
         )
-        _collect(result, local_block, Source.CLAUDE_CODE_LOCAL, claude_json, local)
-    return result
+        _collect(result, local_block, Source.CLAUDE_CODE_LOCAL, claude_json, local, str(folder))
+    return result, [str(folder) for folder in projects]
 
 
 def discover_known(
@@ -344,12 +436,29 @@ def discover_known(
     project_dir: Path,
     platform: str = sys.platform,
     env: dict[str, str] | None = None,
+    system_root: Path | None = None,
 ) -> Discovery:
-    """Read every known configuration file that exists. Missing ones are listed, not errors."""
-    result = Discovery()
-    result.merge(_claude_code_user_and_local(home, project_dir))
-    for known in known_files(home, project_dir, platform, env):
+    """Read every known configuration file that exists.
+
+    Files of the user, of the machine and of the current folder are always listed, so the
+    report says what was looked for. Files of the other projects that ~/.claude.json lists are
+    listed only when they exist, to keep the report readable.
+    """
+    result, claude_projects = _claude_code_user_and_local(home)
+    for known in known_files(home, platform, env, system_root):
         result.merge(_read_known(known))
+    for known in project_files(project_dir):
+        result.merge(_read_known(known))
+    seen = {project_dir.resolve()}
+    for folder in claude_projects:
+        path = Path(folder)
+        if not path.is_absolute() or not path.is_dir() or path.resolve() in seen:
+            continue
+        seen.add(path.resolve())
+        for known in project_files(path):
+            found = _read_known(known)
+            if found.sources[0].status != "missing":
+                result.merge(found)
     return result
 
 

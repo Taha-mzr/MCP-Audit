@@ -18,6 +18,9 @@ FILESYSTEM = {
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/taha/notes"],
 }
+# Machine-wide files (managed by an admin) are looked for under this folder in tests, so the
+# machine running the tests does not change their result.
+NO_SYSTEM = Path("/nonexistent-system-root")
 # Obviously fake value: it must never show up in any output.
 FAKE_TOKEN = "FAKE-TOKEN-NOT-A-SECRET-0000"  # noqa: S105
 GITHUB = {
@@ -123,7 +126,7 @@ def test_all_claude_sources_are_found(tmp_path: Path) -> None:
     )
     write(project / ".mcp.json", {"mcpServers": {"team-fs": FILESYSTEM}})
 
-    result = discover_known(home, project, "darwin", env={})
+    result = discover_known(home, project, "darwin", env={}, system_root=NO_SYSTEM)
 
     assert {(s.name, s.source) for s in result.servers} == {
         ("filesystem", Source.CLAUDE_DESKTOP),
@@ -134,23 +137,108 @@ def test_all_claude_sources_are_found(tmp_path: Path) -> None:
 
 
 def test_nothing_installed_lists_every_source_as_missing(tmp_path: Path) -> None:
-    result = discover_known(tmp_path, tmp_path, "darwin", env={})
+    result = discover_known(tmp_path, tmp_path, "darwin", env={}, system_root=NO_SYSTEM)
     assert result.servers == []
     assert {s.status for s in result.sources} == {"missing"}
-    assert len(result.sources) == 11  # ~/.claude.json + the 10 known files
+    # ~/.claude.json + 7 files of the user and the machine + 7 files of the current folder
+    assert len(result.sources) == 15
 
 
-def test_other_projects_are_not_mixed_in(tmp_path: Path) -> None:
-    other = {"projects": {"/some/other/project": {"mcpServers": {"x": FILESYSTEM}}}}
-    write(tmp_path / ".claude.json", other)
-    assert discover_known(tmp_path, tmp_path / "here", "darwin", env={}).servers == []
+def test_local_servers_of_every_project_are_found(tmp_path: Path) -> None:
+    # Claude Code keeps local servers of every project in ~/.claude.json: all of them count,
+    # not only the project the command runs in.
+    projects = {
+        "/work/a": {"mcpServers": {"fs": FILESYSTEM}},
+        "/work/b": {"mcpServers": {"fs": FILESYSTEM}},
+        "/work/c": {"allowedTools": []},
+    }
+    write(tmp_path / ".claude.json", {"projects": projects})
+    result = discover_known(tmp_path, tmp_path / "here", "darwin", env={}, system_root=NO_SYSTEM)
+    assert sorted((s.project, s.name) for s in result.servers) == [
+        ("/work/a", "fs"),
+        ("/work/b", "fs"),
+    ]
+    assert len({s.key for s in result.servers}) == 2  # same name, two projects: two keys
+
+
+def test_project_files_of_other_claude_projects_are_read(tmp_path: Path) -> None:
+    home, other = tmp_path / "home", tmp_path / "other-project"
+    write(home / ".claude.json", {"projects": {str(other): {}}})
+    write(other / ".cursor" / "mcp.json", {"mcpServers": {"notes": FILESYSTEM}})
+    result = discover_known(home, tmp_path / "here", "darwin", env={}, system_root=NO_SYSTEM)
+    assert [(s.name, s.source, s.project) for s in result.servers] == [
+        ("notes", Source.CURSOR_PROJECT, str(other))
+    ]
+    # Missing files of other projects are not listed, to keep the report readable.
+    assert all(str(other) not in s.path or s.status == "read" for s in result.sources)
+
+
+@pytest.mark.parametrize(
+    ("platform", "suffix"),
+    [
+        ("darwin", "Library/Application Support/ClaudeCode/managed-mcp.json"),
+        ("linux", "etc/claude-code/managed-mcp.json"),
+        ("win32", "Program Files/ClaudeCode/managed-mcp.json"),
+    ],
+)
+def test_claude_code_managed_file(tmp_path: Path, platform: str, suffix: str) -> None:
+    root = tmp_path / "root"
+    write(root / suffix, {"mcpServers": {"company": FILESYSTEM}})
+    result = discover_known(tmp_path, tmp_path / "p", platform, env={}, system_root=root)
+    assert [(s.name, s.source) for s in result.servers] == [("company", Source.CLAUDE_CODE_MANAGED)]
+
+
+@pytest.mark.parametrize(
+    ("platform", "suffix"),
+    [
+        ("darwin", "Library/Application Support/GeminiCli/settings.json"),
+        ("linux", "etc/gemini-cli/settings.json"),
+        ("win32", "ProgramData/gemini-cli/settings.json"),
+    ],
+)
+def test_gemini_system_settings(tmp_path: Path, platform: str, suffix: str) -> None:
+    root = tmp_path / "root"
+    write(root / suffix, {"mcpServers": {"admin": FILESYSTEM}})
+    result = discover_known(tmp_path, tmp_path / "p", platform, env={}, system_root=root)
+    assert [(s.name, s.source) for s in result.servers] == [("admin", Source.GEMINI_SYSTEM)]
+
+
+def test_gemini_system_settings_path_can_be_overridden(tmp_path: Path) -> None:
+    custom = write(tmp_path / "custom.json", {"mcpServers": {"admin": FILESYSTEM}})
+    env = {"GEMINI_CLI_SYSTEM_SETTINGS_PATH": str(custom)}
+    result = discover_known(tmp_path, tmp_path / "p", "linux", env=env, system_root=NO_SYSTEM)
+    assert [s.source for s in result.servers] == [Source.GEMINI_SYSTEM]
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        ".devcontainer/devcontainer.json",
+        ".devcontainer.json",
+        ".devcontainer/python/devcontainer.json",
+    ],
+)
+def test_devcontainer_servers(tmp_path: Path, where: str) -> None:
+    project = tmp_path / "proj"
+    config = {"customizations": {"vscode": {"mcp": {"servers": {"pw": FILESYSTEM}}}}}
+    write(project / where, config)
+    result = discover_known(tmp_path / "home", project, "darwin", env={}, system_root=NO_SYSTEM)
+    assert [(s.name, s.source) for s in result.servers] == [("pw", Source.DEVCONTAINER)]
+
+
+def test_claude_desktop_on_windows_follows_appdata() -> None:
+    path = claude_desktop_config(Path("C:/Users/u"), "win32", {"APPDATA": "D:/Roaming"})
+    assert path == Path("D:/Roaming/Claude/claude_desktop_config.json")
 
 
 # --- Other applications -------------------------------------------------------------
 
 
 def found(home: Path, project: Path) -> set[tuple[str, Source]]:
-    return {(s.name, s.source) for s in discover_known(home, project, "darwin", env={}).servers}
+    return {
+        (s.name, s.source)
+        for s in discover_known(home, project, "darwin", env={}, system_root=NO_SYSTEM).servers
+    }
 
 
 def test_cursor_user_and_project(tmp_path: Path) -> None:
@@ -175,14 +263,16 @@ def test_vscode_uses_servers_key_and_allows_comments(tmp_path: Path) -> None:
 }""",
         encoding="utf-8",
     )
-    result = discover_known(tmp_path / "home", project, "darwin", env={})
+    result = discover_known(tmp_path / "home", project, "darwin", env={}, system_root=NO_SYSTEM)
     assert {(s.name, s.transport) for s in result.servers} == {("fs", "stdio"), ("web", "http")}
 
 
 def test_copilot_home_is_honoured(tmp_path: Path) -> None:
     custom = tmp_path / "custom-copilot"
     write(custom / "mcp-config.json", {"mcpServers": {"c": FILESYSTEM}})
-    result = discover_known(tmp_path, tmp_path, "darwin", env={"COPILOT_HOME": str(custom)})
+    result = discover_known(
+        tmp_path, tmp_path, "darwin", env={"COPILOT_HOME": str(custom)}, system_root=NO_SYSTEM
+    )
     assert [(s.name, s.source) for s in result.servers] == [("c", Source.COPILOT_USER)]
 
 
@@ -191,7 +281,9 @@ def test_gemini_http_url(tmp_path: Path) -> None:
         tmp_path / ".gemini" / "settings.json",
         {"mcpServers": {"g": {"httpUrl": "http://localhost:3000/mcp"}}},
     )
-    spec = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).servers[0]
+    spec = discover_known(
+        tmp_path, tmp_path / "p", "darwin", env={}, system_root=NO_SYSTEM
+    ).servers[0]
     assert (spec.source, spec.transport, spec.url) == (
         Source.GEMINI_USER,
         "http",
@@ -215,7 +307,9 @@ def test_codex_toml(tmp_path: Path) -> None:
     path = tmp_path / ".codex" / "config.toml"
     path.parent.mkdir()
     path.write_text(CODEX_TOML, encoding="utf-8")
-    spec = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).servers[0]
+    spec = discover_known(
+        tmp_path, tmp_path / "p", "darwin", env={}, system_root=NO_SYSTEM
+    ).servers[0]
     assert (spec.name, spec.source, spec.env_keys) == ("fs", Source.CODEX_USER, ["API_KEY"])
     assert FAKE_TOKEN not in spec.model_dump_json()
 
@@ -237,7 +331,9 @@ def test_invalid_toml_is_reported_not_raised(tmp_path: Path) -> None:
     path = tmp_path / ".codex" / "config.toml"
     path.parent.mkdir()
     path.write_text("[mcp_servers.fs\n", encoding="utf-8")
-    statuses = discover_known(tmp_path, tmp_path / "p", "darwin", env={}).sources
+    statuses = discover_known(
+        tmp_path, tmp_path / "p", "darwin", env={}, system_root=NO_SYSTEM
+    ).sources
     assert any(s.source is Source.CODEX_USER and s.status == "invalid" for s in statuses)
 
 

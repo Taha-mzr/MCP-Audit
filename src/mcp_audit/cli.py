@@ -52,7 +52,8 @@ def _print_discovery(result: Discovery) -> None:
         return
     for spec in result.servers:
         target = spec.url or " ".join([spec.command or "?", *spec.args])
-        print(f"{spec.name}  [{spec.transport}, {spec.source}]")
+        where = f", project {spec.project}" if spec.project else ""
+        print(f"{spec.name}  [{spec.transport}, {spec.source}{where}]")
         print(f"    {target}")
         if spec.env_keys:
             print(f"    env: {', '.join(spec.env_keys)} (values not shown)")
