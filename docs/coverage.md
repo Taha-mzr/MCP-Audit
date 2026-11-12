@@ -22,7 +22,7 @@ Pour chacun des 10 risques, ce tableau dit ce que l'outil couvre aujourd'hui, et
 
 ## Ce qu'on corrige, dans l'ordre
 
-1. C1 : fiche, tests et code, faits le 2026-11-12. Reste l'essai sur le Mac de Taha.
+1. C1 : fiche, tests et code, faits le 2026-11-12.
 2. C2, C3, C4, C5 : une fiche chacun, même méthode.
 3. Nouvelle règle pour MCP07, sur les programmes distants.
 4. C4 branché sur une copie locale de la base OSV.dev.

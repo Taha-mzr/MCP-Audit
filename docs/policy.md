@@ -2,14 +2,12 @@
 
 | | |
 |---|---|
-| Statut de la fiche | validée par Taha le 2026-11-12, codée et testée le même jour |
+| Statut de la fiche | en vigueur depuis le 2026-11-12 |
 | Étape du plan | C-1 |
 | Code | `src/mcp_audit/policy.py`, et C1 dans `checks.py` (étapes C-2 et C-3) |
 | Tests | `tests/test_policy.py` |
 
-## Décisions de Taha
-
-Taha a accepté les 5 conseils le 2026-11-12.
+## Choix de conception
 
 | N° | Question | Choix | Pourquoi |
 |---|---|---|---|
@@ -107,5 +105,4 @@ ne doit jamais faire croire que le test est permis, ou interdit.
 
 ## Historique
 
-- 2026-11-12 : brouillon n°1.
-- 2026-11-12 : Taha valide les 5 décisions. Tests écrits d'abord, puis le code.
+- 2026-11-12 : première version, avec ses tests et son code.

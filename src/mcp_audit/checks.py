@@ -152,7 +152,7 @@ def _version_tuple(version: str) -> tuple[int, ...] | None:
 
 
 # --- C1: folders broader than needed -----------------------------------------------
-# Rule sheet: docs/rules/C1.md, validated by Taha on 2026-11-12. The lists below are this
+# Rule sheet: docs/rules/C1.md. The lists below are this
 # project's own choice: the MCP specification names the families "home directory, SSH keys,
 # system directories" but gives no paths.
 

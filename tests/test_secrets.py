@@ -15,7 +15,7 @@ FAKE_AWS = "AKIA" + "FAKEFAKEFAKEFAKE"
         (FAKE_AWS, "aws-access-token"),
         ("sk-ant-api03-" + "x" * 93 + "AA", "anthropic-api-key"),
         ("sk-ant-" + "x" * 30, None),  # too short for the gitleaks rule,
-        ("/Users/taha/notes", None),
+        ("/Users/alice/notes", None),
         ("-y", None),
     ],
 )

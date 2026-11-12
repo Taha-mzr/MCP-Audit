@@ -152,5 +152,5 @@ L'outil ne lit pas encore ces réglages : il présente tous les programmes comme
 - Peut-être oubliés, à vérifier : l'ancienne clé `"mcp"` dans `settings.json` de VS Code, les
   programmes déclarés dans les sous-agents de Claude Code, VS Code Insiders et VSCodium.
 
-Pour ces cas, la méthode est : lire la page de doc qui manque. Si elle ne dit rien, regarder sur le Mac
-de Taha, avec une commande qui ne fait que lister des noms de fichiers.
+Pour ces cas, la méthode est : lire la page de doc qui manque. Si elle ne dit rien, regarder sur une
+machine de test, avec une commande qui ne fait que lister des noms de fichiers.

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Statut de la fiche | brouillon / validée par Taha le AAAA-MM-JJ |
+| Statut de la fiche | brouillon / en vigueur depuis le AAAA-MM-JJ |
 | Code | `src/mcp_audit/checks.py`, fonction `check_<id>` |
 | Tests | `tests/test_checks.py`, tests `test_<id>_...` |
 | OWASP MCP Top 10 | MCPxx:2025, titre exact |

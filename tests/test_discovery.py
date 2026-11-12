@@ -16,7 +16,7 @@ from mcp_audit.discovery import (
 
 FILESYSTEM = {
     "command": "npx",
-    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/taha/notes"],
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/alice/notes"],
 }
 # Machine-wide files (managed by an admin) are looked for under this folder in tests, so the
 # machine running the tests does not change their result.
@@ -45,7 +45,7 @@ def test_stdio_server_is_parsed() -> None:
     assert specs[0].name == "filesystem"
     assert specs[0].transport == "stdio"
     assert specs[0].command == "npx"
-    assert specs[0].args[-1] == "/Users/taha/notes"
+    assert specs[0].args[-1] == "/Users/alice/notes"
 
 
 def test_env_values_are_never_kept() -> None:
@@ -296,7 +296,7 @@ model = "some-model"
 
 [mcp_servers.fs]
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/taha/notes"]
+args = ["-y", "@modelcontextprotocol/server-filesystem", "/Users/alice/notes"]
 
 [mcp_servers.fs.env]
 API_KEY = "FAKE-TOKEN-NOT-A-SECRET-0000"

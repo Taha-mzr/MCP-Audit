@@ -24,14 +24,14 @@ def entry(**fields: object) -> ServerSpec:
 
 # The examples of docs/rules/C1.md, in the same order. None means: no finding.
 C1_SHEET_EXAMPLES = [
-    (["npx", "-y", FS, "/Users/taha"], "high"),
+    (["npx", "-y", FS, "/Users/alice"], "high"),
     (["npx", "-y", FS, "/"], "critical"),
     (["npx", "-y", FS, "~/.ssh"], "high"),
-    (["npx", "-y", FS, "C:\\Users\\taha\\.ssh"], "high"),
-    (["npx", "-y", FS, "C:/Users/taha"], "high"),
-    (["npx", "-y", FS, "/users/taha"], "high"),
-    (["npx", "-y", FS, "file:///Users/taha"], "high"),
-    (["npx", "-y", FS, "/Users/taha/notes/.."], "high"),
+    (["npx", "-y", FS, "C:\\Users\\alice\\.ssh"], "high"),
+    (["npx", "-y", FS, "C:/Users/alice"], "high"),
+    (["npx", "-y", FS, "/users/alice"], "high"),
+    (["npx", "-y", FS, "file:///Users/alice"], "high"),
+    (["npx", "-y", FS, "/Users/alice/notes/.."], "high"),
     (["npx", "-y", FS, "~/.claude"], "high"),
     (
         [
@@ -40,7 +40,7 @@ C1_SHEET_EXAMPLES = [
             "-i",
             "--rm",
             "-v",
-            "/Users/taha:/projects",
+            "/Users/alice:/projects",
             "mcp/filesystem",
             "/projects",
         ],
@@ -53,14 +53,14 @@ C1_SHEET_EXAMPLES = [
             "-i",
             "--rm",
             "--mount",
-            "type=bind,source=/Users/taha,dst=/projects",
+            "type=bind,source=/Users/alice,dst=/projects",
             "mcp/filesystem",
             "/projects",
         ],
         "high",
     ),
     (["npx", "-y", FS, "/Users/username/Desktop"], None),
-    (["npx", "-y", FS, "/Users/taha/notes"], None),
+    (["npx", "-y", FS, "/Users/alice/notes"], None),
     (["npx", "-y", FS, "/Users/Shared"], None),
     (["npx", "-y", FS, "C:"], None),
     (
@@ -70,7 +70,7 @@ C1_SHEET_EXAMPLES = [
             "-i",
             "--rm",
             "--mount",
-            "type=bind,src=/Users/taha/notes,dst=/root/notes",
+            "type=bind,src=/Users/alice/notes,dst=/root/notes",
             "img",
             "/root",
         ],
@@ -260,7 +260,7 @@ def test_c5_shell_relative_path_and_docker() -> None:
     # Seen in a real Codex configuration: the program depends on the starting folder.
     assert check_c5(spec("./Some.app/Contents/MacOS/client", "mcp"))[1][0].severity == "low"
     # Mounted folders are C1's job since 2026-11-12; C5 keeps --privileged.
-    _, docker = check_c5(spec("docker", "run", "--privileged", "-v", "/Users/taha:/data", "img"))
+    _, docker = check_c5(spec("docker", "run", "--privileged", "-v", "/Users/alice:/data", "img"))
     assert [f.title for f in docker] == ["Risky launch: container started with --privileged"]
 
 
@@ -273,7 +273,7 @@ def test_c5_plain_launch_passes() -> None:
 
 def test_report_has_one_run_per_check_and_server_and_no_secret() -> None:
     servers = [
-        spec("npx", "-y", f"{FS}@2025.3.28", "/Users/taha"),
+        spec("npx", "-y", f"{FS}@2025.3.28", "/Users/alice"),
         entry(command="npx", args=["x"], env={"TOKEN": FAKE_GITHUB}),
     ]
     report = build_report(Discovery(servers=servers))

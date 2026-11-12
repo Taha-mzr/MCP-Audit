@@ -165,7 +165,7 @@ def test_static_finding_in_static_section() -> None:
     c1 = finding(
         check_id="C1",
         kind=FindingKind.CONFIG_GAP,
-        evidence=[ev(EvidenceSource.CONFIG, 'args: ["/Users/taha"]')],
+        evidence=[ev(EvidenceSource.CONFIG, 'args: ["/Users/alice"]')],
         observed_access=None,
     )
     assert RealConfigSection(findings=[c1]).findings == [c1]
