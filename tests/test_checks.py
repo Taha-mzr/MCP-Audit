@@ -45,6 +45,13 @@ def test_c1_does_not_run_on_remote_servers() -> None:
     assert run.reason
 
 
+def test_c1_runs_on_a_local_server_with_an_unknown_type() -> None:
+    # Found by review on 2026-11-09: an unknown "type" made C1 skip a local server as remote.
+    run, findings = check_c1(entry(type="weird", command="npx", args=["-y", FS, "/"]))
+    assert run.status is Status.NEEDS_REVIEW
+    assert findings[0].severity == "critical"
+
+
 # --- C2 ----------------------------------------------------------------------------------
 
 
@@ -53,6 +60,7 @@ def test_c2_confirms_a_known_token_and_never_shows_it() -> None:
     run, findings = check_c2(s)
     assert run.status is Status.CONFIRMED
     assert FAKE_GITHUB not in findings[0].model_dump_json()
+    assert findings[0].cwe == ["CWE-798"]
 
 
 def test_c2_name_only_needs_review() -> None:

@@ -121,6 +121,12 @@ def test_owasp_tags_are_checked() -> None:
         finding(owasp=["A01"])
 
 
+def test_cwe_ids_are_checked() -> None:
+    assert finding(cwe=["CWE-798"]).cwe == ["CWE-798"]
+    with pytest.raises(ValidationError, match="CWE"):
+        finding(cwe=["cwe 798"])
+
+
 def test_exported_artifact_must_be_hashed() -> None:
     with pytest.raises(ValidationError, match="sha256"):
         Evidence(source=EvidenceSource.SYSCALL_TRACE, summary="trace", artifact="trace.log")

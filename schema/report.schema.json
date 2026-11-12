@@ -135,6 +135,13 @@
           "title": "Owasp",
           "type": "array"
         },
+        "cwe": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Cwe",
+          "type": "array"
+        },
         "evidence": {
           "items": {
             "$ref": "#/$defs/Evidence"

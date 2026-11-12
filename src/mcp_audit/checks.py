@@ -14,7 +14,9 @@ Status rules used here:
   local folder to check).
 
 References: OWASP MCP Top 10, edition 2025 (https://owasp.org/www-project-mcp-top-10/);
-CWE-22 for C1, CWE-798 and the gitleaks rules for C2 (see secrets.py), OSV.dev for C4.
+CWE-798 and the gitleaks rules for C2 (see secrets.py), OSV.dev for C4. Each rule's sources,
+logic and limits are written in docs/rules/<id>.md. C1 cited CWE-22 (path traversal) until
+2026-11-09: that was wrong, nothing is traversed; its CWE is chosen in docs/rules/C1.md.
 The lists of broad or sensitive folders (C1) and of risky launches (C5) are this project's own
 choices, not taken from a published rule set: review them when extending the checks.
 """
@@ -170,7 +172,7 @@ def _path_candidates(args: list[str]) -> list[tuple[int, str]]:
 
 
 def check_c1(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
-    if spec.transport != "stdio":
+    if spec.command is None:  # a "url" only: nothing is started on this machine
         reason = "remote server: no local folder in its configuration"
         return _run(spec, "C1", [], reason=reason), []
     findings = []
@@ -234,6 +236,7 @@ def check_c2(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
                     "another tool) gets the secret."
                 ),
                 owasp=["MCP01"],
+                cwe=["CWE-798"],
                 evidence=[
                     _config_evidence(
                         spec,

@@ -24,6 +24,7 @@ Regenerate the committed JSON Schema after any change:
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal, Self
@@ -138,6 +139,8 @@ class Finding(Strict):
     severity: Severity
     severity_rationale: str = Field(min_length=1)
     owasp: list[str] = Field(default_factory=list)
+    # CWE ids (https://cwe.mitre.org), e.g. "CWE-798". Each one is justified in docs/rules/<id>.md.
+    cwe: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
     observed_access: ObservedAccess | None = None  # lab findings only
     recommendation: str | None = None
@@ -157,6 +160,9 @@ class Finding(Strict):
             needed = SUFFICIENT_SOURCE.get(self.observed_access)
             if needed is not None and not any(e.source is needed for e in self.evidence):
                 raise ValueError(f"{self.observed_access} is only proven by {needed} evidence")
+        for cwe in self.cwe:
+            if not re.fullmatch(r"CWE-[1-9][0-9]*", cwe):
+                raise ValueError(f"not a CWE id: {cwe!r}")
         for tag in self.owasp:
             if not (len(tag) == 5 and tag.startswith("MCP") and tag[3:].isdigit()):
                 raise ValueError(f"unknown OWASP MCP category: {tag!r}")
