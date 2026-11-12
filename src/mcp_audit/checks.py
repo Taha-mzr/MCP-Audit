@@ -27,6 +27,7 @@ import posixpath
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from mcp_audit.discovery import ServerSpec
 from mcp_audit.models import (
@@ -39,6 +40,7 @@ from mcp_audit.models import (
     Severity,
     Status,
 )
+from mcp_audit.policy import Policy
 
 OWASP_EDITION = "2025"
 
@@ -285,44 +287,119 @@ def _path_candidates(spec: ServerSpec) -> list[tuple[int, str]]:
     return out
 
 
-def check_c1(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
+def _as_home(path: str) -> str:
+    """'/users/jean/notes' -> '~/notes', so that a config and a policy can be compared.
+    Assumes the home folder in the config is the user's own (see the limits of C1)."""
+    home = _HOME.match(path)
+    if home and home.group(1) not in _NOT_A_HOME:
+        return "~" + path[len(home.group(1)) :]
+    return path
+
+
+def _inside(path: str, folder: str) -> bool:
+    return path == folder or path.startswith(folder.rstrip("/") + "/")
+
+
+def _looks_like_a_path(path: str) -> bool:
+    return path.startswith(("/", "~")) or bool(re.match(r"^[a-z]:/", path))
+
+
+def _finding(spec: ServerSpec, i: int, path: str, scope: str, severity: Severity) -> Finding:
+    return Finding(
+        check_id="C1",
+        server=spec.key,
+        title=f"'{path}' gives access to {scope}, if this server treats it as a folder",
+        status=Status.NEEDS_REVIEW,
+        kind=FindingKind.CONFIG_GAP,
+        severity=severity,
+        severity_rationale=(
+            f"If this server treats '{path}' as an allowed folder, the AI can reach "
+            f"{scope}, and so can anyone who manages to steer the AI. Read-only access "
+            "does not lower this: reading a private key is enough to steal it."
+        ),
+        owasp=["MCP02"],
+        cwe=["CWE-250"],
+        evidence=[_config_evidence(spec, f"args[{i}] = {spec.args[i]!r}", arg_index=i)],
+        recommendation=(
+            "Allow only the folder the server needs, e.g. ~/Documents/notes. With "
+            "Docker, add :ro to -v (or ,ro to --mount) when the server only reads. "
+            "Write what you allow in a policy file (--policy) to turn this into a clear yes or no."
+        ),
+        limits=[
+            "Static: whether this argument is a folder the server may access depends "
+            "on the server; no policy of expected folders was given.",
+            "The application can send other folders (MCP Roots) while the server runs; "
+            "they are not in the configuration.",
+        ],
+    )
+
+
+def _policy_finding(
+    spec: ServerSpec, i: int, path: str, policy: Policy, severity: Severity, scope: str | None
+) -> Finding:
+    allowed = policy.servers[spec.name]
+    folders = [*allowed.read, *allowed.write]
+    shown = ", ".join(folders) if folders else "no folder"
+    gives = f"{scope}" if scope else f"'{path}'"
+    return Finding(
+        check_id="C1",
+        server=spec.key,
+        title=(
+            f"'{path}' gives access to {scope}; your policy allows only {shown}"
+            if scope
+            else f"'{path}' is not allowed by your policy, which allows only {shown}"
+        ),
+        status=Status.CONFIRMED,
+        kind=FindingKind.CONFIG_GAP,
+        severity=severity,
+        severity_rationale=(
+            f"Your configuration gives this server {gives}; your policy allows only {shown}. "
+            "Both come from you, not from the server, so the gap is certain."
+        ),
+        owasp=["MCP02"],
+        cwe=["CWE-250"],
+        evidence=[
+            _config_evidence(spec, f"args[{i}] = {spec.args[i]!r}", arg_index=i),
+            Evidence(
+                source=EvidenceSource.POLICY,
+                summary=(
+                    f"servers.{spec.name}: read {list(allowed.read)}, write {list(allowed.write)}"
+                ),
+                data={"policy": policy.path, "server": spec.name},
+            ),
+        ],
+        recommendation=(
+            "Change the configuration to give only the folders of your policy, or change the "
+            "policy if this folder is really wanted."
+        ),
+        limits=[
+            "Static: whether this argument is a folder the server may access depends on the "
+            "server. The lab test (D1) checks what the server really reads and writes.",
+            "A home folder written as /Users/<name> is compared as ~: it is taken to be yours.",
+        ],
+    )
+
+
+def check_c1(spec: ServerSpec, policy: Policy | None = None) -> tuple[CheckRun, list[Finding]]:
     if spec.command is None:  # a "url" only: nothing is started on this machine
         reason = "remote server: no local folder in its configuration"
         return _run(spec, "C1", [], reason=reason), []
+    allowed = policy.servers.get(spec.name) if policy else None
+    folders = [_as_home(_normalise(p)) for p in (*allowed.read, *allowed.write)] if allowed else []
     findings = []
     for i, path in _path_candidates(spec):
-        found = _classify(_normalise(path))
-        if found is None:
+        normal = _normalise(path)
+        found = _classify(normal)
+        if allowed is None or policy is None:
+            if found is not None:
+                findings.append(_finding(spec, i, path, *found))
             continue
-        scope, severity = found
-        findings.append(
-            Finding(
-                check_id="C1",
-                server=spec.key,
-                title=f"'{path}' gives access to {scope}, if this server treats it as a folder",
-                status=Status.NEEDS_REVIEW,
-                kind=FindingKind.CONFIG_GAP,
-                severity=severity,
-                severity_rationale=(
-                    f"If this server treats '{path}' as an allowed folder, the AI can reach "
-                    f"{scope}, and so can anyone who manages to steer the AI. Read-only access "
-                    "does not lower this: reading a private key is enough to steal it."
-                ),
-                owasp=["MCP02"],
-                cwe=["CWE-250"],
-                evidence=[_config_evidence(spec, f"args[{i}] = {spec.args[i]!r}", arg_index=i)],
-                recommendation=(
-                    "Allow only the folder the server needs, e.g. ~/Documents/notes. With "
-                    "Docker, add :ro to -v (or ,ro to --mount) when the server only reads."
-                ),
-                limits=[
-                    "Static: whether this argument is a folder the server may access depends "
-                    "on the server; no policy of expected folders was given.",
-                    "The application can send other folders (MCP Roots) while the server runs; "
-                    "they are not in the configuration.",
-                ],
-            )
-        )
+        if not _looks_like_a_path(normal):
+            continue
+        if any(_inside(_as_home(normal), folder) for folder in folders):
+            continue
+        scope, severity = found if found else (None, Severity.MEDIUM)
+        findings.append(_policy_finding(spec, i, path, policy, severity, scope))
     return _run(spec, "C1", findings), findings
 
 
@@ -521,10 +598,11 @@ STATIC_CHECKS: list[Callable[[ServerSpec], tuple[CheckRun, list[Finding]]]] = [
 ]
 
 
-def run_static(specs: list[ServerSpec]) -> RealConfigSection:
+def run_static(specs: list[ServerSpec], policy: Policy | None = None) -> RealConfigSection:
     section = RealConfigSection()
+    checks = [partial(check_c1, policy=policy), *STATIC_CHECKS[1:]]
     for spec in specs:
-        for check in STATIC_CHECKS:
+        for check in checks:
             run, findings = check(spec)
             section.checks.append(run)
             section.findings.extend(findings)

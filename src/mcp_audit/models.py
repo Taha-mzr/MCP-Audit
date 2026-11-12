@@ -83,7 +83,11 @@ class EvidenceSource(StrEnum):
     RETURNED_CONTENT = "returned_content"  # a secret canary token found in what the server returned
     SYSCALL_TRACE = "syscall_trace"  # system calls made by the server's processes
     DISK_SNAPSHOT = "disk_snapshot"  # file hashes, sizes and mtimes before and after a probe
+    POLICY = "policy"  # what the user allowed, in their own policy file (docs/policy.md)
 
+
+# What a static check may cite: files the user wrote, nothing the server did or said.
+STATIC_SOURCES = frozenset({EvidenceSource.CONFIG, EvidenceSource.POLICY})
 
 # Sources that can support CONFIRMED. A server's claim never can: it may lie or be wrong.
 INDEPENDENT_SOURCES = frozenset(EvidenceSource) - {EvidenceSource.SERVER_CLAIM}
@@ -208,8 +212,10 @@ class RealConfigSection(Strict):
         for f in self.findings:
             if f.observed_access is not None:
                 raise ValueError(f"{f.check_id}: no access is observed in a static analysis")
-            if any(e.source is not EvidenceSource.CONFIG for e in f.evidence):
-                raise ValueError(f"{f.check_id}: static findings only cite the configuration")
+            if any(e.source not in STATIC_SOURCES for e in f.evidence):
+                raise ValueError(
+                    f"{f.check_id}: static findings only cite the configuration and the policy"
+                )
         _no_pass_with_confirmed_finding(self.checks, self.findings)
         return self
 

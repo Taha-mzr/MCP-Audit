@@ -92,7 +92,8 @@
         "server_claim",
         "returned_content",
         "syscall_trace",
-        "disk_snapshot"
+        "disk_snapshot",
+        "policy"
       ],
       "title": "EvidenceSource",
       "type": "string"

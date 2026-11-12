@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from mcp_audit import __version__
 from mcp_audit.checks import OWASP_EDITION, run_static
 from mcp_audit.discovery import Discovery, discover_known, from_command, read_config_file
 from mcp_audit.models import Report, Status
+from mcp_audit.policy import Policy, PolicyError, load_policy
 
 LABELS = {
     Status.CONFIRMED: "CONFIRMED",
@@ -59,11 +61,11 @@ def _print_discovery(result: Discovery) -> None:
             print(f"    env: {', '.join(spec.env_keys)} (values not shown)")
 
 
-def build_report(result: Discovery) -> Report:
+def build_report(result: Discovery, policy: Policy | None = None) -> Report:
     return Report(
         tool_version=__version__,
         generated_at=datetime.now(UTC),
-        real_config=run_static(result.servers),
+        real_config=run_static(result.servers, policy),
         owasp_mcp_top10_version=OWASP_EDITION,
     )
 
@@ -126,6 +128,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         description=known,
     )
     audit.add_argument("--output", type=Path, help="also write the JSON report to this file")
+    audit.add_argument(
+        "--policy",
+        type=Path,
+        help="a TOML file saying which folders each server may read and write (docs/policy.md)",
+    )
     _add_source_options(audit)
 
     args = parser.parse_args(argv)
@@ -134,6 +141,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command and args.command[0] == "--":
         args.command = args.command[1:]
+    policy = None
+    if getattr(args, "policy", None):
+        try:
+            policy = load_policy(args.policy.expanduser())
+        except PolicyError as error:
+            print(f"mcp-audit: {error}", file=sys.stderr)
+            return 2
     result = _discover(args)
 
     if args.action == "discover":
@@ -143,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_discovery(result)
         return 0
 
-    report = build_report(result)
+    report = build_report(result, policy)
     _print_report(result, report)
     if args.output:
         args.output.write_text(report.model_dump_json(indent=2), encoding="utf-8")

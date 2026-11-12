@@ -2,15 +2,16 @@
 
 | | |
 |---|---|
-| Statut de la fiche | brouillon n°1, 2026-11-12, à valider par Taha |
+| Statut de la fiche | validée par Taha le 2026-11-12, codée et testée le même jour |
 | Étape du plan | C-1 |
-| Code prévu | `src/mcp_audit/policy.py`, puis C1 qui l'utilise (étape C-3) |
+| Code | `src/mcp_audit/policy.py`, et C1 dans `checks.py` (étapes C-2 et C-3) |
+| Tests | `tests/test_policy.py` |
 
-## Décisions à prendre par Taha
+## Décisions de Taha
 
-Pour chaque décision, je donne mon choix conseillé. Réponds juste « ok pour tout », ou le numéro que tu veux changer.
+Taha a accepté les 5 conseils le 2026-11-12.
 
-| N° | Question | Mon conseil | Pourquoi |
+| N° | Question | Choix | Pourquoi |
 |---|---|---|---|
 | 1 | Quel format de fichier ? | TOML, au lieu du YAML prévu dans le plan | Python sait déjà le lire, sans rien installer. Il accepte les commentaires `#`. Le YAML demande `pyyaml`, et sa fonction `yaml.load` peut lancer du code si on oublie `safe_load`. |
 | 2 | Comment on désigne un programme ? | Par son nom dans la config, par exemple `maison` | C'est le nom que l'utilisateur voit déjà. Si deux applications ont un programme du même nom, la même règle vaut pour les deux. |
@@ -37,6 +38,8 @@ Une section par programme. Tous les champs sont **notre choix** : aucune norme n
 | `read` | les dossiers que le programme peut lire | non, vide par défaut |
 | `write` | les dossiers où il peut écrire. Écrire permet aussi de lire | non, vide par défaut |
 
+On l'utilise avec `uv run mcp-audit audit --policy politique.toml`.
+
 Un chemin s'écrit comme dans une config : `~/notes`, `/Users/jean/notes`, `C:/Users/jean/notes`.
 Il est nettoyé comme dans C1 : majuscules, `\`, `..`, `~`.
 
@@ -62,10 +65,16 @@ Avec la config de `C1-flux.md` :
 | `maison` | `/Users/jean` | lecture `~/Documents/cours` | **CONFIRMED** : la config donne tout le dossier personnel, la politique seulement `~/Documents/cours` |
 | `meteo` | une `url` | absent | not run, comme aujourd'hui |
 | un programme absent de la politique | `/Users/jean` | absent | TO REVIEW, comme aujourd'hui |
+| `maison` | `/Users/jean/photos` | lecture `~/Documents/cours` | **CONFIRMED**, gravité medium : ce dossier n'est pas dans la politique |
+
+Seuls les arguments qui ressemblent à un chemin sont comparés : ils commencent par `/`, `~` ou une lettre de disque.
+Pour comparer, `/Users/jean` est lu comme `~` : on suppose que le dossier personnel de la config est celui de l'utilisateur.
 
 ## Quand le fichier est mal écrit
 
 L'outil s'arrête avec un message clair, et ne fait pas l'audit. Il ne devine jamais.
+
+Les messages sont en anglais, comme le reste de l'outil.
 
 | Erreur | Exemple | Message |
 |---|---|---|
@@ -99,3 +108,4 @@ ne doit jamais faire croire que le test est permis, ou interdit.
 ## Historique
 
 - 2026-11-12 : brouillon n°1.
+- 2026-11-12 : Taha valide les 5 décisions. Tests écrits d'abord, puis le code.
