@@ -1,3 +1,5 @@
+import pytest
+
 from mcp_audit.checks import check_c1, check_c2, check_c3, check_c4, check_c5, package_of
 from mcp_audit.cli import build_report, main
 from mcp_audit.discovery import Discovery, ServerSpec, Source, from_command, parse_servers
@@ -20,23 +22,153 @@ def entry(**fields: object) -> ServerSpec:
 # --- C1 ----------------------------------------------------------------------------------
 
 
-def test_c1_flags_home_root_and_credentials_folders() -> None:
-    for path, severity in [
-        ("/", "critical"),
+# The examples of docs/rules/C1.md, in the same order. None means: no finding.
+C1_SHEET_EXAMPLES = [
+    (["npx", "-y", FS, "/Users/taha"], "high"),
+    (["npx", "-y", FS, "/"], "critical"),
+    (["npx", "-y", FS, "~/.ssh"], "high"),
+    (["npx", "-y", FS, "C:\\Users\\taha\\.ssh"], "high"),
+    (["npx", "-y", FS, "C:/Users/taha"], "high"),
+    (["npx", "-y", FS, "/users/taha"], "high"),
+    (["npx", "-y", FS, "file:///Users/taha"], "high"),
+    (["npx", "-y", FS, "/Users/taha/notes/.."], "high"),
+    (["npx", "-y", FS, "~/.claude"], "high"),
+    (
+        [
+            "docker",
+            "run",
+            "-i",
+            "--rm",
+            "-v",
+            "/Users/taha:/projects",
+            "mcp/filesystem",
+            "/projects",
+        ],
+        "high",
+    ),
+    (
+        [
+            "docker",
+            "run",
+            "-i",
+            "--rm",
+            "--mount",
+            "type=bind,source=/Users/taha,dst=/projects",
+            "mcp/filesystem",
+            "/projects",
+        ],
+        "high",
+    ),
+    (["npx", "-y", FS, "/Users/username/Desktop"], None),
+    (["npx", "-y", FS, "/Users/taha/notes"], None),
+    (["npx", "-y", FS, "/Users/Shared"], None),
+    (["npx", "-y", FS, "C:"], None),
+    (
+        [
+            "docker",
+            "run",
+            "-i",
+            "--rm",
+            "--mount",
+            "type=bind,src=/Users/taha/notes,dst=/root/notes",
+            "img",
+            "/root",
+        ],
+        None,
+    ),
+    (["docker", "run", "-i", "--rm", "-v", "mesdonnees:/data", "img"], None),
+]
+
+
+@pytest.mark.parametrize(("argv", "severity"), C1_SHEET_EXAMPLES, ids=lambda v: str(v))
+def test_c1_sheet_examples(argv: list[str], severity: str | None) -> None:
+    run, findings = check_c1(spec(*argv))
+    if severity is None:
+        assert (run.status, findings) == (Status.PASSED, [])
+    else:
+        assert run.status is Status.NEEDS_REVIEW
+        assert [f.severity for f in findings] == [severity]
+        assert findings[0].cwe == ["CWE-250"]
+        assert findings[0].owasp == ["MCP02"]
+
+
+@pytest.mark.parametrize(
+    ("path", "severity"),
+    [
+        # Whole disk and every user's folder.
+        ("D:/", "critical"),
         ("/Users", "critical"),
-        ("/Users/taha", "high"),
-        ("/Users/taha/", "high"),
+        ("/home", "critical"),
+        ("C:\\Users", "critical"),
+        # A whole home folder, written in every way the sheet lists.
+        ("/Users/sarah/", "high"),
+        ("/home/ahmed", "high"),
+        ("/root", "high"),
+        ("/var/root", "high"),
         ("~", "high"),
-        ("/home/taha/.ssh", "high"),
-    ]:
-        run, findings = check_c1(spec("npx", "-y", FS, path))
-        assert run.status is Status.NEEDS_REVIEW, path
-        assert findings[0].severity == severity, path
+        ("$HOME", "high"),
+        ("${HOME}", "high"),
+        ("$USERPROFILE", "high"),
+        ("%USERPROFILE%", "high"),
+        ("${userHome}", "high"),
+        # Secrets, and files or folders inside them.
+        ("/home/ahmed/.aws", "high"),
+        ("~/.ssh/cles-perso", "high"),
+        ("$HOME/.netrc", "high"),
+        ("/Users/sarah/Library/Keychains", "high"),
+        ("/Users/sarah/Library/Application Support", "high"),
+        ("%USERPROFILE%\\.git-credentials", "high"),
+        # Writing there lets a program run code (decision 3).
+        ("~/.claude.json", "high"),
+        ("/Users/sarah/.cursor", "high"),
+        ("~/.zshrc", "high"),
+        ("/Users/sarah/Library/LaunchAgents", "high"),
+        # System folders (decision 4).
+        ("/etc", "high"),
+        ("/private/etc", "high"),
+        ("/System", "high"),
+        ("/usr", "high"),
+        ("C:\\Windows", "high"),
+        ("c:/programdata", "high"),
+        # The value after "=" of a flag.
+        ("--root=/Users/sarah", "high"),
+        # Not flagged.
+        ("/Users/Guest", None),
+        ("/Users/sarah/.claude-notes", None),
+        ("/Users/sarah/Library", None),
+        ("/usr/local/share/data", None),
+        ("./data", None),
+    ],
+)
+def test_c1_paths(path: str, severity: str | None) -> None:
+    run, findings = check_c1(spec("npx", "-y", FS, path))
+    assert [f.severity for f in findings] == ([severity] if severity else []), path
 
 
-def test_c1_accepts_a_narrow_folder() -> None:
-    run, findings = check_c1(spec("npx", "-y", FS, "/Users/taha/notes"))
-    assert (run.status, findings) == (Status.PASSED, [])
+def test_c1_docker_reads_only_host_side_mounts() -> None:
+    # -w, -e and every argument after the image are inside the container.
+    argv = [
+        "docker",
+        "run",
+        "-e",
+        "HOME=/",
+        "-w",
+        "/",
+        "--volume=C:\\Users\\sarah:/data",
+        "--mount",
+        "type=volume,src=/,dst=/x",
+        "img",
+        "/",
+    ]
+    run, findings = check_c1(spec(*argv))
+    assert [f.severity for f in findings] == ["high"]
+    assert "C:\\Users\\sarah" in findings[0].title
+    assert findings[0].evidence[0].data["arg_index"] == 5  # the --volume= argument
+
+
+def test_c1_podman_mounts_are_read_too() -> None:
+    _, findings = check_c1(spec("podman", "run", "-v", "/home/ahmed:/w:ro", "img"))
+    assert [f.severity for f in findings] == ["high"]  # read-only: same severity (decision 1)
 
 
 def test_c1_does_not_run_on_remote_servers() -> None:
@@ -127,8 +259,9 @@ def test_c5_shell_relative_path_and_docker() -> None:
     assert check_c5(spec("sh", "-c", "npx server"))[1][0].severity == "high"
     # Seen in a real Codex configuration: the program depends on the starting folder.
     assert check_c5(spec("./Some.app/Contents/MacOS/client", "mcp"))[1][0].severity == "low"
+    # Mounted folders are C1's job since 2026-11-12; C5 keeps --privileged.
     _, docker = check_c5(spec("docker", "run", "--privileged", "-v", "/Users/taha:/data", "img"))
-    assert len(docker) == 2
+    assert [f.title for f in docker] == ["Risky launch: container started with --privileged"]
 
 
 def test_c5_plain_launch_passes() -> None:

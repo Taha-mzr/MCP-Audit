@@ -10,7 +10,7 @@ Pour chacun des 10 risques, ce tableau dit ce que l'outil couvre aujourd'hui, et
 | Risque OWASP | Titre exact | Ce qu'on a | État |
 |---|---|---|---|
 | MCP01:2025 | Token Mismanagement & Secret Exposure | C2 : secret écrit en clair dans `env`, `headers` ou `args` | en partie : C2 ne regarde pas encore un secret dans une `url`, ni dans un fichier d'environnement à côté |
-| MCP02:2025 | Privilege Escalation via Scope Creep | C1 : dossier trop large dans `args`. C5 : dossier trop large monté dans Docker | en partie : la config montre l'accès donné, le labo devra prouver l'accès réel |
+| MCP02:2025 | Privilege Escalation via Scope Creep | C1 : dossier trop large dans `args` ou monté dans Docker | en partie : la config montre l'accès donné, le labo devra prouver l'accès réel |
 | MCP03:2025 | Tool Poisoning | rien | **manque** : demande la liste des outils, donc le labo |
 | MCP04:2025 | Software Supply Chain Attacks & Dependency Tampering | C3 : version pas fixée. C4 : version avec une faille connue | en partie : C4 ne connaît qu'un paquet, à remplacer par OSV.dev |
 | MCP05:2025 | Command Injection & Execution | C5 regarde le lancement (`sh -c`, Docker `--privileged`, chemin `./`) | **mal étiqueté** : C5 n'est pas de l'injection, à revoir |
@@ -22,7 +22,7 @@ Pour chacun des 10 risques, ce tableau dit ce que l'outil couvre aujourd'hui, et
 
 ## Ce qu'on corrige, dans l'ordre
 
-1. C1 : fiche, puis tests et code.
+1. C1 : fiche, tests et code, faits le 2026-11-12. Reste l'essai sur le Mac de Taha.
 2. C2, C3, C4, C5 : une fiche chacun, même méthode.
 3. Nouvelle règle pour MCP07, sur les programmes distants.
 4. C4 branché sur une copie locale de la base OSV.dev.

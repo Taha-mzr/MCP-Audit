@@ -16,13 +16,14 @@ Status rules used here:
 References: OWASP MCP Top 10, edition 2025 (https://owasp.org/www-project-mcp-top-10/);
 CWE-798 and the gitleaks rules for C2 (see secrets.py), OSV.dev for C4. Each rule's sources,
 logic and limits are written in docs/rules/<id>.md. C1 cited CWE-22 (path traversal) until
-2026-11-09: that was wrong, nothing is traversed; its CWE is chosen in docs/rules/C1.md.
+2026-11-09: that was wrong, nothing is traversed; it now cites CWE-250 (docs/rules/C1.md).
 The lists of broad or sensitive folders (C1) and of risky launches (C5) are this project's own
 choices, not taken from a published rule set: review them when extending the checks.
 """
 
 from __future__ import annotations
 
+import posixpath
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -149,24 +150,137 @@ def _version_tuple(version: str) -> tuple[int, ...] | None:
 
 
 # --- C1: folders broader than needed -----------------------------------------------
+# Rule sheet: docs/rules/C1.md, validated by Taha on 2026-11-12. The lists below are this
+# project's own choice: the MCP specification names the families "home directory, SSH keys,
+# system directories" but gives no paths.
 
-_ROOTS = re.compile(r"^(/|[A-Za-z]:\\?)$")
-_HOME = re.compile(
-    r"^(~|\$HOME|\$\{HOME\}|%USERPROFILE%|/Users/[^/]+|/home/[^/]+|/root|[A-Za-z]:\\Users\\[^\\]+)$"
+# Ways of writing the user's home folder; each is replaced by "~" before comparing.
+_HOME_VARIABLES = re.compile(r"^(~|\$HOME|\$\{HOME\}|\$USERPROFILE|%USERPROFILE%|\$\{userHome\})")
+_DRIVE = re.compile(r"^[a-z]:")
+_ROOTS = re.compile(r"^(/|[a-z]:/)$")
+_HOME_PARENT = re.compile(r"^(/users|/home|[a-z]:/users)$")
+_HOME = re.compile(r"^(~|/users/[^/]+|/home/[^/]+|/root|/var/root|[a-z]:/users/[^/]+)(/|$)")
+_NOT_A_HOME = {"/users/shared", "/users/guest"}
+# Inside the home folder. A path inside one of these alerts too.
+_CREDENTIALS = (
+    ".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config",
+    "library/keychains", "library/application support",
+    ".netrc", ".git-credentials", ".npmrc",
+)  # fmt: skip
+_RUNS_CODE = (
+    ".claude", ".claude.json", ".cursor", ".codex", ".gemini", ".copilot",
+    ".zshrc", ".bashrc", ".profile", "library/launchagents",
+)  # fmt: skip
+# System folders: only the folder itself alerts, not a folder inside it.
+_SYSTEM = re.compile(
+    r"^(/etc|/private/etc|/system|/library|/usr|/var|/private|[a-z]:/windows|[a-z]:/programdata)$"
 )
-_HOME_PARENT = re.compile(r"^(/Users|/home|[A-Za-z]:\\Users)$")
-_SENSITIVE = re.compile(
-    r"^(~|\$HOME|\$\{HOME\}|/Users/[^/]+|/home/[^/]+|/root)/"
-    r"(\.ssh|\.aws|\.gnupg|\.kube|\.docker|\.config|\.azure|Library/Keychains)$"
-    r"|^/etc$"
-)
 
 
-def _path_candidates(args: list[str]) -> list[tuple[int, str]]:
+def _normalise(raw: str) -> str:
+    """The path as C1 compares it: lower case, '/' only, '.' and '..' resolved, home as '~'."""
+    path = raw.strip()
+    if path.lower().startswith("file://"):
+        path = path[len("file://") :]
+        if re.match(r"^/[A-Za-z]:", path):  # file:///C:/Users -> C:/Users
+            path = path[1:]
+    path = _HOME_VARIABLES.sub("~", path).replace("\\", "/")
+    if not path:
+        return path
+    drive = ""
+    if _DRIVE.match(path.lower()):
+        drive, path = path[:2], path[2:]
+        if not path:  # "C:" alone is the current folder of that drive, not its root
+            return raw.lower()
+    path = posixpath.normpath(path)
+    if path.startswith("//"):
+        path = "/" + path.lstrip("/")
+    return (drive + path).lower()
+
+
+def _classify(path: str) -> tuple[str, Severity] | None:
+    """What a normalised path gives access to, most serious first."""
+    if _ROOTS.match(path):
+        return "the whole disk", Severity.CRITICAL
+    if _HOME_PARENT.match(path):
+        return "every user's home folder", Severity.CRITICAL
+    home = _HOME.match(path)
+    if home and home.group(1) not in _NOT_A_HOME:
+        inside = path[home.end() :]
+        if not inside:
+            return "your whole home folder (SSH keys, documents...)", Severity.HIGH
+        if any(inside == item or inside.startswith(item + "/") for item in _CREDENTIALS):
+            return "a folder or file that holds credentials", Severity.HIGH
+        if any(inside == item or inside.startswith(item + "/") for item in _RUNS_CODE):
+            return (
+                "a folder or file where writing makes a program run (AI app settings, "
+                "shell startup, login items)",
+                Severity.HIGH,
+            )
+        return None
+    if _SYSTEM.match(path):
+        return "a system folder", Severity.HIGH
+    return None
+
+
+# docker run / podman run options that take no value; every other option takes one.
+_DOCKER_SWITCHES = {
+    "--rm", "--init", "--privileged", "--interactive", "--tty", "--detach", "--read-only",
+    "--publish-all", "--no-healthcheck", "--oom-kill-disable", "--sig-proxy",
+}  # fmt: skip
+
+
+def _mount_source(flag: str, value: str) -> str | None:
+    """The host folder of a -v/--volume or --mount value, or None for a named volume."""
+    if flag == "--mount":
+        fields = dict(f.split("=", 1) for f in value.split(",") if "=" in f)
+        if fields.get("type") != "bind":
+            return None
+        return fields.get("src") or fields.get("source")
+    if re.match(r"^[A-Za-z]:[\\/]", value):  # C:\Users\sarah:/data
+        source = value[:2] + value[2:].split(":", 1)[0]
+    elif ":" in value:
+        source = value.split(":", 1)[0]
+    else:
+        return None  # "-v /data": a volume created inside the container
+    if not re.search(r"[/\\]", source) and not source.startswith(("~", "$", "%")):
+        return None  # a named volume, e.g. "mesdonnees"
+    return source
+
+
+def _docker_mounts(args: list[str]) -> list[tuple[int, str]]:
+    """Host folders mounted by `docker run` / `podman run`, with their index in args."""
     out = []
-    for i, arg in enumerate(args):
+    i = 1  # args[0] is "run"
+    while i < len(args):
+        arg = args[i]
+        if not arg.startswith("-"):
+            break  # the image: what follows runs inside the container
+        flag, has_value, value = arg.partition("=")
+        if flag in {"-v", "--volume", "--mount"}:
+            if not has_value:
+                i += 1
+                value = args[i] if i < len(args) else ""
+            source = _mount_source(flag, value)
+            if source:
+                out.append((i, source))
+        elif not has_value and arg not in _DOCKER_SWITCHES and not re.match(r"^-[a-zA-Z]+$", arg):
+            i += 1  # a long option with its value in the next argument
+        elif (
+            not has_value and re.match(r"^-[a-zA-Z]$", arg) and arg not in {"-i", "-t", "-d", "-P"}
+        ):
+            i += 1  # a short option with a value, e.g. -e NAME=value, -w /folder
+        i += 1
+    return out
+
+
+def _path_candidates(spec: ServerSpec) -> list[tuple[int, str]]:
+    runner = (spec.command or "").rsplit("/", 1)[-1].removesuffix(".exe")
+    if runner in {"docker", "podman"} and spec.args[:1] == ["run"]:
+        return _docker_mounts(spec.args)
+    out = []
+    for i, arg in enumerate(spec.args):
         value = arg.split("=", 1)[1] if arg.startswith("-") and "=" in arg else arg
-        value = value.rstrip("/\\") or value  # "/Users/taha/" -> "/Users/taha", "/" stays
         out.append((i, value))
     return out
 
@@ -176,35 +290,36 @@ def check_c1(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
         reason = "remote server: no local folder in its configuration"
         return _run(spec, "C1", [], reason=reason), []
     findings = []
-    for i, path in _path_candidates(spec.args):
-        if _ROOTS.match(path):
-            scope, severity = "the whole disk", Severity.CRITICAL
-        elif _HOME_PARENT.match(path):
-            scope, severity = "every user's home folder", Severity.CRITICAL
-        elif _HOME.match(path):
-            scope, severity = "your whole home folder (SSH keys, documents...)", Severity.HIGH
-        elif _SENSITIVE.match(path):
-            scope, severity = "a folder that holds credentials", Severity.HIGH
-        else:
+    for i, path in _path_candidates(spec):
+        found = _classify(_normalise(path))
+        if found is None:
             continue
+        scope, severity = found
         findings.append(
             Finding(
                 check_id="C1",
                 server=spec.key,
-                title=f"Argument {path!r} gives access to {scope}",
+                title=f"'{path}' gives access to {scope}, if this server treats it as a folder",
                 status=Status.NEEDS_REVIEW,
                 kind=FindingKind.CONFIG_GAP,
                 severity=severity,
                 severity_rationale=(
-                    f"If this server treats {path!r} as an allowed folder, the AI can read "
-                    f"{scope}. Whether it is wanted depends on your intent."
+                    f"If this server treats '{path}' as an allowed folder, the AI can reach "
+                    f"{scope}, and so can anyone who manages to steer the AI. Read-only access "
+                    "does not lower this: reading a private key is enough to steal it."
                 ),
                 owasp=["MCP02"],
-                evidence=[_config_evidence(spec, f"args[{i}] = {path!r}", arg_index=i)],
-                recommendation="Allow only the folder the server needs, e.g. ~/Documents/notes.",
+                cwe=["CWE-250"],
+                evidence=[_config_evidence(spec, f"args[{i}] = {spec.args[i]!r}", arg_index=i)],
+                recommendation=(
+                    "Allow only the folder the server needs, e.g. ~/Documents/notes. With "
+                    "Docker, add :ro to -v (or ,ro to --mount) when the server only reads."
+                ),
                 limits=[
                     "Static: whether this argument is a folder the server may access depends "
-                    "on the server; no policy of expected folders was given."
+                    "on the server; no policy of expected folders was given.",
+                    "The application can send other folders (MCP Roots) while the server runs; "
+                    "they are not in the configuration.",
                 ],
             )
         )
@@ -374,13 +489,9 @@ def check_c5(spec: ServerSpec) -> tuple[CheckRun, list[Finding]]:
             )
         )
     if runner in {"docker", "podman"}:
+        # Mounted folders are checked by C1 since 2026-11-12 (docs/rules/C1.md).
         if "--privileged" in spec.args:
             reasons.append(("container started with --privileged", Severity.HIGH))
-        for i, arg in enumerate(spec.args):
-            mount = spec.args[i + 1] if arg in {"-v", "--volume"} and i + 1 < len(spec.args) else ""
-            source = mount.split(":", 1)[0]
-            if _ROOTS.match(source) or _HOME.match(source.rstrip("/")):
-                reasons.append((f"container mounts {source!r}", Severity.HIGH))
     findings = [
         Finding(
             check_id="C5",
