@@ -1,0 +1,9 @@
+{
+  "name": "mcp-audit-lab-server-filesystem",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Pins @modelcontextprotocol/server-filesystem 2025.7.1 and its dependencies for the mcp-audit lab.",
+  "dependencies": {
+    "@modelcontextprotocol/server-filesystem": "2025.7.1"
+  }
+}
